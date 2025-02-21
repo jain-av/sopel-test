@@ -34,18 +34,9 @@ else:
 
 # We check Python's version ourselves in case someone installed Sopel on an
 # old version of pip (<9.0.0), which doesn't know about `python_requires`.
-if sys.version_info < (2, 7) or (
-    sys.version_info.major >= 3 and sys.version_info < (3, 3)
-):
+if sys.version_info < (3, 7):
     # Maybe not the best way to do this, but this question is tiring.
-    raise ImportError('Sopel requires Python 2.7+ or 3.3+.')
-# Py2 EOL: https://www.python.org/dev/peps/pep-0373/#maintenance-releases
-if sys.version_info.major == 2:
-    print(
-        'Warning: Python 2.x has reached end of life and will receive '
-        'no further updates. Sopel 8.0 will drop support for it.',
-        file=sys.stderr,
-    )
+    raise ImportError('Sopel requires Python 3.7+.')
 
 
 def read_reqs(path):
@@ -54,8 +45,6 @@ def read_reqs(path):
 
 
 requires = read_reqs('requirements.txt')
-if sys.version_info[0] < 3:
-    requires.append('backports.ssl_match_hostname')
 dev_requires = requires + read_reqs('dev-requirements.txt')
 
 setup(

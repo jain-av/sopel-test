@@ -16,5 +16,6 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 if __name__ == "__main__":
     import sys
     import pytest
-    returncode = pytest.main()
-    sys.exit(returncode)
+    # pytest.main() returns an exit code.  We pass this to sys.exit() so that
+    # the calling shell gets the correct exit code.
+    sys.exit(pytest.main())
