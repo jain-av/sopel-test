@@ -56,11 +56,7 @@ import sys
 from sopel import tools
 from . import core_section, types
 
-if sys.version_info.major < 3:
-    import ConfigParser
-else:
-    basestring = str
-    import configparser as ConfigParser
+import configparser as ConfigParser
 
 
 __all__ = [
@@ -276,87 +272,38 @@ class Config(object):
         if not issubclass(cls_, types.StaticSection):
             raise ValueError("Class must be a subclass of StaticSection.")
         current = getattr(self, name, None)
-        current_name = str(current.__class__)
-        new_name = str(cls_)
-        if (current is not None and not isinstance(current, self.ConfigSection) and
-                not current_name == new_name):
+        if (current is not None and not isinstance(current, types.StaticSection) and
+                type(current) != cls_):
             raise ValueError(
                 "Can not re-define class for section from {} to {}.".format(
-                    current_name, new_name)
+                    type(current), cls_)
             )
         setattr(self, name, cls_(self, name, validate=validate))
 
-    class ConfigSection(object):
-        """Represents a section of the config file.
-
-        :param str name: name of this section
-        :param items: key-value pairs
-        :type items: :term:`iterable` of two-item :class:`tuple`\\s
-        :param parent: this section's containing object
-        :type parent: :class:`Config`
-
-        Contains all keys in the section as attributes.
-        """
-        def __init__(self, name, items, parent):
-            object.__setattr__(self, '_name', name)
-            object.__setattr__(self, '_parent', parent)
-            for item in items:
-                value = item[1].strip()
-                if not value.lower() == 'none':
-                    if value.lower() == 'false':
-                        value = False
-                    object.__setattr__(self, item[0], value)
-
-        def __getattr__(self, name):
-            return None
-
-        def __contains__(self, name):
-            return name in vars(self)
-
-        def __setattr__(self, name, value):
-            object.__setattr__(self, name, value)
-            if type(value) is list:
-                value = ','.join(value)
-            self._parent.parser.set(self._name, name, value)
-
-        @tools.deprecated(
-            'No longer used; replaced by a dedicated ListAttribute type.'
-            '7.0', '8.0')
-        def get_list(self, name):
-            """Legacy way of getting a list from a config value.
-
-            :param str name: name of the attribute to fetch and interpret as a list
-            :return: the value of ``name`` as a list
-            :rtype: list
-
-            .. deprecated:: 7.0
-                Use :class:`~.types.ListAttribute` when storing a list value.
-                This legacy method will be removed in Sopel 8.0.
-            """
-            value = getattr(self, name)
-            if not value:
-                return []
-            if isinstance(value, basestring):
-                value = value.split(',')
-                # Keep the split value, so we don't have to keep doing this
-                setattr(self, name, value)
-            return value
-
     def __getattr__(self, name):
-        if name in self.parser.sections():
+        try:
             items = self.parser.items(name)
-            section = self.ConfigSection(name, items, self)  # Return a section
-            setattr(self, name, section)
-            return section
-        else:
+        except ConfigParser.NoSectionError:
             raise AttributeError("%r object has no attribute %r"
-                                 % (type(self).__name__, name))
+                                 % (type(self).__name__, name)) from None
+
+        # Create a dictionary to hold the section items
+        section_data = {}
+        for item_name, item_value in items:
+            value = item_value.strip()
+            if not value.lower() == 'none':
+                if value.lower() == 'false':
+                    value = False
+                section_data[item_name] = value
+
+        # Return the section data as a dictionary
+        return section_data
 
     def __getitem__(self, name):
         return self.__getattr__(name)
 
     def __contains__(self, name):
-        return name in self.parser.sections()
+        return self.parser.has_section(name)
 
     def option(self, question, default=False):
         """Ask the user a "y/n" question.
