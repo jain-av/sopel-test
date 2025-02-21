@@ -3,8 +3,9 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import pytest
+from urllib.parse import quote, unquote
 
-from sopel.tools.web import quote, search_urls, trim_url, unquote
+from sopel.tools.web import search_urls, trim_url
 
 
 QUOTED_STRINGS = [
