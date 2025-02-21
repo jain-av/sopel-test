@@ -301,7 +301,7 @@ def test_handle_isupport_namesx(mockbot):
         ':are supported by this server')
 
     assert 'NAMESX' not in mockbot.isupport
-    assert mockbot.backend.message_sent == []
+    assert not mockbot.backend.has_message_sent()
     assert 'multi-prefix' not in mockbot.server_capabilities
 
     mockbot.on_message(
@@ -331,7 +331,7 @@ def test_handle_isupport_namesx_with_multi_prefix(mockbot):
         ':are supported by this server')
 
     assert 'NAMESX' in mockbot.isupport
-    assert mockbot.backend.message_sent == [], (
+    assert not mockbot.backend.has_message_sent(), (
         'Sopel must not send PROTOCTL NAMESX '
         'when multi-prefix capability is available'
     )

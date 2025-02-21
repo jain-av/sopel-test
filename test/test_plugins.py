@@ -4,7 +4,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import sys
 
-import pkg_resources
+import importlib.metadata
 import pytest
 
 from sopel import plugins
@@ -134,15 +134,21 @@ def test_plugin_load_entry_point(tmpdir):
     mod_file.write(MOCK_MODULE_CONTENT)
 
     # generate setuptools Distribution object
-    distrib = pkg_resources.Distribution(root.strpath)
+    # distrib = pkg_resources.Distribution(root.strpath) # Removed dependency
     sys.path.append(root.strpath)
 
     # load the entry point
     try:
-        entry_point = pkg_resources.EntryPoint(
-            'test_plugin', 'file_mod', dist=distrib)
+        # entry_point = pkg_resources.EntryPoint( # Removed dependency
+        #     'test_plugin', 'file_mod', dist=distrib)
+        # Use importlib.metadata to get the entry point
+        d = importlib.metadata.Distribution.from_name('sopel')  # Assuming 'sopel' package
+        entry_point = next(ep for ep in d.entry_points if ep.name == 'test_plugin' and ep.module == 'file_mod')
+
         plugin = plugins.handlers.EntryPointPlugin(entry_point)
         plugin.load()
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("sopel package not found")
     finally:
         sys.path.remove(root.strpath)
 

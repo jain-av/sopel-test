@@ -5,6 +5,8 @@ import os
 import sys
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from sopel import config
 from sopel.config import types
@@ -312,7 +314,6 @@ def test_configparser_multi_env(monkeypatch, multi_fakeconfig):
         '"*starchan"'
     ]
 
-
 def test_save_unmodified_config(multi_fakeconfig):
     """Assert type attributes are kept as they should be"""
     multi_fakeconfig.save()
@@ -400,10 +401,10 @@ def test_save_modified_config(multi_fakeconfig):
 
 
 def test_get_defined_sections(multi_fakeconfig):
-    assert multi_fakeconfig.parser.has_section('core')
-    assert multi_fakeconfig.parser.has_section('fake')
-    assert multi_fakeconfig.parser.has_section('spam')
-    assert multi_fakeconfig.parser.has_section('somesection')
+    assert multi_fakeconfig.has_section('core')
+    assert multi_fakeconfig.has_section('fake')
+    assert multi_fakeconfig.has_section('spam')
+    assert multi_fakeconfig.has_section('somesection')
 
     results = multi_fakeconfig.get_defined_sections()
 

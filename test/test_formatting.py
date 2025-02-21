@@ -25,8 +25,10 @@ def test_color():
     assert color(text) == text
     assert color(text, colors.PINK) == '\x0313' + text + '\x03'
     assert color(text, colors.PINK, colors.TEAL) == '\x0313,10' + text + '\x03'
-    pytest.raises(ValueError, color, text, 100)
-    pytest.raises(ValueError, color, text, 'INVALID')
+    with pytest.raises(ValueError):
+        color(text, 100)
+    with pytest.raises(ValueError):
+        color(text, 'INVALID')
 
 
 def test_hex_color():
@@ -34,9 +36,12 @@ def test_hex_color():
     assert hex_color(text) == text
     assert hex_color(text, '369') == '\x04336699' + text + '\x04'
     assert hex_color(text, '246', '987654') == '\x04224466,987654' + text + '\x04'
-    pytest.raises(ValueError, hex_color, text, 0x224466)
-    pytest.raises(ValueError, hex_color, text, '1234')
-    pytest.raises(ValueError, hex_color, text, 'sixchr')
+    with pytest.raises(ValueError):
+        hex_color(text, 0x224466)
+    with pytest.raises(ValueError):
+        hex_color(text, '1234')
+    with pytest.raises(ValueError):
+        hex_color(text, 'sixchr')
 
 
 def test_bold():

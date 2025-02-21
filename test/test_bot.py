@@ -5,6 +5,8 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import re
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 
 from sopel import bot, loader, module, plugin, plugins, trigger
 from sopel.plugins import rules

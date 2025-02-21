@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 import pytest
-
+from sqlalchemy import select
 from sopel.db import ChannelValues, Nicknames, NickValues, PluginValues, SopelDB
 from sopel.tools import Identifier
 
@@ -62,9 +62,7 @@ def test_get_nick_id(db):
     for test in tests:
         test[0] = db.get_nick_id(test[2])
         nick_id, slug, nick = test
-        registered = session.query(Nicknames) \
-                            .filter(Nicknames.canonical == nick) \
-                            .all()
+        registered = session.execute(select(Nicknames).filter(Nicknames.canonical == nick)).scalars().all()
         assert len(registered) == 1
         assert registered[0].slug == slug and registered[0].canonical == nick
 
@@ -120,10 +118,9 @@ def test_set_nick_value(db):
             db.set_nick_value(nick, key, value)
 
         for key, value in iteritems(data):
-            found_value = session.query(NickValues.value) \
-                                 .filter(NickValues.nick_id == nick_id) \
-                                 .filter(NickValues.key == key) \
-                                 .scalar()
+            found_value = session.execute(select(NickValues.value)
+                                 .filter(NickValues.nick_id == nick_id)
+                                 .filter(NickValues.key == key)).scalar()
             assert json.loads(unicode(found_value)) == value
     check()
 
@@ -187,9 +184,8 @@ def test_unalias_nick(db):
         db.unalias_nick(alias)
 
     for alias in aliases:
-        found = session.query(Nicknames) \
-                       .filter(Nicknames.nick_id == nick_id) \
-                       .all()
+        found = session.execute(select(Nicknames)
+                       .filter(Nicknames.nick_id == nick_id)).scalars().all()
         assert len(found) == 1
     session.close()
 
@@ -209,9 +205,9 @@ def test_delete_nick_group(db):
     db.delete_nick_group(aliases[0])
 
     # Nothing else has created values, so we know the tables are empty
-    nicks = session.query(Nicknames).all()
+    nicks = session.execute(select(Nicknames)).scalars().all()
     assert len(nicks) == 0
-    data = session.query(NickValues).first()
+    data = session.execute(select(NickValues)).first()
     assert data is None
     session.close()
 
@@ -233,16 +229,15 @@ def test_merge_nick_groups(db):
 
     db.merge_nick_groups(aliases[0], aliases[1])
 
-    nick_ids = session.query(Nicknames.nick_id).all()
-    nick_id = nick_ids[0][0]
-    alias_id = nick_ids[1][0]
+    nick_ids = session.execute(select(Nicknames.nick_id)).scalars().all()
+    nick_id = nick_ids[0]
+    alias_id = nick_ids[1]
     assert nick_id == alias_id
 
     for key, value in finals:
-        found = session.query(NickValues.value) \
-                       .filter(NickValues.nick_id == nick_id) \
-                       .filter(NickValues.key == key) \
-                       .scalar()
+        found = session.execute(select(NickValues.value)
+                       .filter(NickValues.nick_id == nick_id)
+                       .filter(NickValues.key == key)).scalar()
         assert json.loads(unicode(found)) == value
     session.close()
 
@@ -250,10 +245,9 @@ def test_merge_nick_groups(db):
 def test_set_channel_value(db):
     session = db.ssession()
     db.set_channel_value('#asdf', 'qwer', 'zxcv')
-    result = session.query(ChannelValues.value) \
-                    .filter(ChannelValues.channel == '#asdf') \
-                    .filter(ChannelValues.key == 'qwer') \
-                    .scalar()
+    result = session.execute(select(ChannelValues.value)
+                    .filter(ChannelValues.channel == '#asdf')
+                    .filter(ChannelValues.key == 'qwer')).scalar()
     assert result == '"zxcv"'
     session.close()
 
@@ -306,10 +300,9 @@ def test_get_preferred_value(db):
 def test_set_plugin_value(db):
     session = db.ssession()
     db.set_plugin_value('plugname', 'qwer', 'zxcv')
-    result = session.query(PluginValues.value) \
-                    .filter(PluginValues.plugin == 'plugname') \
-                    .filter(PluginValues.key == 'qwer') \
-                    .scalar()
+    result = session.execute(select(PluginValues.value)
+                    .filter(PluginValues.plugin == 'plugname')
+                    .filter(PluginValues.key == 'qwer')).scalar()
     assert result == '"zxcv"'
     session.close()
 
@@ -329,7 +322,6 @@ def test_get_plugin_value(db):
 def test_get_plugin_value_default(db):
     assert db.get_plugin_value("TestPlugin", "DoesntExist") is None
     assert db.get_plugin_value("TestPlugin", "DoesntExist", "MyDefault") == "MyDefault"
-
 
 def test_delete_plugin_value(db):
     db.set_plugin_value('plugin', 'wasd', 'uldr')

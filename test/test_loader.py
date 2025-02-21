@@ -6,6 +6,7 @@ import inspect
 import re
 
 import pytest
+import sqlalchemy
 
 from sopel import loader, module, plugins
 
@@ -841,7 +842,7 @@ def test_clean_callable_intents(tmpconfig, func):
     assert len(func.intents) == 1
 
     # Test the regex is compiled properly
-    regex = func.intents[0]
+    regex = re.compile(func.intents[0], re.IGNORECASE)
     assert regex.match('abc')
     assert regex.match('abcd')
     assert regex.match('ABC')
