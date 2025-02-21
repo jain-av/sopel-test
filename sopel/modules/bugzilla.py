@@ -67,34 +67,48 @@ def _bugzilla_loader(settings):
 def show_bug(bot, trigger, match=None):
     """Show information about a Bugzilla bug."""
     url = 'https://%s%sctype=xml&%s' % trigger.groups()
-    data = requests.get(url).content
-    bug = xmltodict.parse(data).get('bugzilla').get('bug')
-    error = bug.get('@error', None)  # error="NotPermitted"
-
-    if error:
-        LOGGER.warning('Bugzilla error: %s' % error)
-        bot.say('Unable to get information for '
-                'linked bug (%s)' % error)
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        data = response.content
+    except requests.exceptions.RequestException as e:
+        LOGGER.error(f"Error fetching Bugzilla data: {e}")
+        bot.say("Error fetching Bugzilla data. Please check the logs.")
         return
 
-    message = ('%s | Product: %s | Component: %s | Version: %s | ' +
-               'Importance: %s |  Status: %s | Assigned to: %s | ' +
-               'Reported: %s | Modified: %s')
+    try:
+        bug = xmltodict.parse(data).get('bugzilla').get('bug')
+        error = bug.get('@error', None)  # error="NotPermitted"
 
-    resolution = bug.get('resolution')
-    if resolution is not None:
-        status = bug.get('bug_status') + ' ' + resolution
-    else:
-        status = bug.get('bug_status')
+        if error:
+            LOGGER.warning('Bugzilla error: %s' % error)
+            bot.say('Unable to get information for '
+                    'linked bug (%s)' % error)
+            return
 
-    assigned_to = bug.get('assigned_to')
-    if isinstance(assigned_to, dict):
-        assigned_to = assigned_to.get('@name')
+        message = ('%s | Product: %s | Component: %s | Version: %s | ' +
+                   'Importance: %s |  Status: %s | Assigned to: %s | ' +
+                   'Reported: %s | Modified: %s')
 
-    message = message % (
-        bug.get('short_desc'), bug.get('product'),
-        bug.get('component'), bug.get('version'),
-        (bug.get('priority') + ' ' + bug.get('bug_severity')),
-        status, assigned_to, bug.get('creation_ts'),
-        bug.get('delta_ts'))
-    bot.say(message)
+        resolution = bug.get('resolution')
+        if resolution is not None:
+            status = bug.get('bug_status') + ' ' + resolution
+        else:
+            status = bug.get('bug_status')
+
+        assigned_to = bug.get('assigned_to')
+        if isinstance(assigned_to, dict):
+            assigned_to = assigned_to.get('@name')
+
+        message = message % (
+            bug.get('short_desc'), bug.get('product'),
+            bug.get('component'), bug.get('version'),
+            (bug.get('priority') + ' ' + bug.get('bug_severity')),
+            status, assigned_to, bug.get('creation_ts'),
+            bug.get('delta_ts'))
+        bot.say(message)
+
+    except Exception as e:
+        LOGGER.error(f"Error processing Bugzilla data: {e}")
+        bot.say("Error processing Bugzilla data. Please check the logs.")
+        return

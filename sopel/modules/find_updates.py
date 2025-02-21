@@ -57,34 +57,17 @@ def check_version(bot):
 
     try:
         r = requests.get(version_url, timeout=(5, 5))
-    except requests.exceptions.RequestException:
+        r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+    except requests.exceptions.RequestException as e:
+        bot.logger.error(f"Update check failed: {e}")
         _check_failed(bot)
-    else:
-        success = True
+        return
 
     try:
-        if success:
-            info = r.json()
+        info = r.json()
     except ValueError:
-        # TODO: use JSONDecodeError when dropping Pythons < 3.5
+        bot.logger.error("Failed to decode JSON from update server.")
         _check_failed(bot)
-        success = False
-
-    if not success:
-        if bot.memory.get('update_failures', 0) <= max_failures:
-            # not enough failures to worry; silently ignore this one
-            return
-
-        # too many failures to ignore; notify owner
-        bot.say(
-            "[update] I haven't been able to check for updates in a while. "
-            "Please verify that {} is working and I can reach it."
-            .format(version_url), bot.config.core.owner)
-        bot.say(
-            "[update] If this issue persists, please alert the Sopel dev team "
-            "in #sopel on Libera Chat, or open a GitHub issue: "
-            "https://github.com/sopel-irc/sopel/issues",
-            bot.config.core.owner)
         return
 
     _check_succeeded(bot)

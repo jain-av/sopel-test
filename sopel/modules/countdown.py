@@ -28,9 +28,9 @@ def generic_countdown(bot, trigger):
     if text and (len(text) == 3 and text[0].isdigit() and
                  text[1].isdigit() and text[2].isdigit()):
         try:
-            diff = (datetime.datetime(int(text[0]), int(text[1]),
-                    int(text[2])) - datetime.datetime.today())
-        except Exception:  # TODO: Be specific
+            dt_object = datetime.datetime(int(text[0]), int(text[1]), int(text[2]))
+            diff = (dt_object - datetime.datetime.now())
+        except ValueError:
             bot.reply("Please use correct format: {}countdown 2012 12 21"
                       .format(bot.config.core.help_prefix))
             return plugin.NOLIMIT

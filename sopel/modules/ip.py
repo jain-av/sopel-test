@@ -14,24 +14,13 @@ import logging
 import os
 import socket
 import tarfile
+import urllib.request
 
 import geoip2.database
 
 from sopel import plugin
 from sopel.config import types
 from sopel.tools import web
-
-urlretrieve = None
-try:
-    from urllib import urlretrieve
-except ImportError:
-    try:
-        # urlretrieve has been put under urllib.request in Python 3.
-        # It's also deprecated so this should probably be replaced with
-        # urllib2.
-        from urllib.request import urlretrieve
-    except ImportError:
-        pass
 
 
 LOGGER = logging.getLogger(__name__)
@@ -91,7 +80,7 @@ def _find_geoip_db(bot):
     elif (os.path.isfile(os.path.join('/usr/share/GeoIP', 'GeoLite2-City.mmdb')) and
             os.path.isfile(os.path.join('/usr/share/GeoIP', 'GeoLite2-ASN.mmdb'))):
         return '/usr/share/GeoIP'
-    elif urlretrieve:
+    else:
         LOGGER.info('Downloading GeoIP database')
         bot.say('Downloading GeoIP database, please wait...')
 
@@ -110,11 +99,9 @@ def _find_geoip_db(bot):
         for url in geolite_urls:
             LOGGER.debug('GeoIP Source URL: %s', url)
             full_path = os.path.join(config.core.homedir, url.split("/")[-1])
-            urlretrieve(url, full_path)
+            urllib.request.urlretrieve(url, full_path)
             _decompress(full_path, config.core.homedir)
         return bot.config.core.homedir
-    else:
-        return False
 
 
 @plugin.command('iplookup', 'ip')

@@ -32,14 +32,16 @@ def seen(bot, trigger):
         bot.reply("I'm right here!")
         return
 
-    timestamp = bot.db.get_nick_value(nick, 'seen_timestamp')
-    if not timestamp:
-        bot.reply("Sorry, I haven't seen {nick} around.".format(nick=nick))
-        return
+    # Use the session to interact with the database
+    with bot.db.session() as session:
+        timestamp = session.get_nick_value(nick, 'seen_timestamp')
+        if not timestamp:
+            bot.reply("Sorry, I haven't seen {nick} around.".format(nick=nick))
+            return
 
-    channel = bot.db.get_nick_value(nick, 'seen_channel')
-    message = bot.db.get_nick_value(nick, 'seen_message')
-    action = bot.db.get_nick_value(nick, 'seen_action')
+        channel = session.get_nick_value(nick, 'seen_channel')
+        message = session.get_nick_value(nick, 'seen_message')
+        action = session.get_nick_value(nick, 'seen_action')
 
     saw = datetime.datetime.utcfromtimestamp(timestamp)
     delta = seconds_to_human((trigger.time - saw).total_seconds())
@@ -67,7 +69,10 @@ def seen(bot, trigger):
 @plugin.require_chanmsg
 def note(bot, trigger):
     nick = trigger.nick
-    bot.db.set_nick_value(nick, 'seen_timestamp', time.time())
-    bot.db.set_nick_value(nick, 'seen_channel', trigger.sender)
-    bot.db.set_nick_value(nick, 'seen_message', trigger)
-    bot.db.set_nick_value(nick, 'seen_action', trigger.ctcp is not None)
+
+    # Use the session to interact with the database
+    with bot.db.session() as session:
+        session.set_nick_value(nick, 'seen_timestamp', time.time())
+        session.set_nick_value(nick, 'seen_channel', trigger.sender)
+        session.set_nick_value(nick, 'seen_message', trigger)
+        session.set_nick_value(nick, 'seen_action', trigger.ctcp is not None)

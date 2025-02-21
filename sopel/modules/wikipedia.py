@@ -10,17 +10,13 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import logging
 import re
+from html.parser import HTMLParser
 
 from requests import get
 
 from sopel import plugin
 from sopel.config import types
 from sopel.tools.web import quote, unquote
-
-try:  # TODO: Remove fallback when dropping py2
-    from html.parser import HTMLParser
-except ImportError:
-    from HTMLParser import HTMLParser
 
 LOGGER = logging.getLogger(__name__)
 REDIRECT = re.compile(r'^REDIRECT (.*)')
@@ -36,7 +32,7 @@ class WikiParser(HTMLParser):
     """
 
     def __init__(self, section_name):
-        HTMLParser.__init__(self)
+        super().__init__()
         self.consume = True
         self.no_consume_depth = 0
         self.is_header = False

@@ -22,7 +22,6 @@ from sopel import formatting, plugin, tools
 from sopel.config import types
 from sopel.tools.time import format_time, get_timezone
 
-
 if sys.version_info.major >= 3:
     unicode = str
 
@@ -311,13 +310,30 @@ def message(bot, trigger):
 
     # check if there are reminders to send
     if not reminders:
-        return  # nothing to do
+        return
+
+    # should we use private message?
+    if bot.config.tell.use_private_reminder:
+        recipient = nick
+        max_public = 0  # disable public message
+    else:
+        recipient = trigger.sender
+        max_public = bot.config.tell.maximum_public
+
+    # send reminders
+    for i, reminder in enumerate(reminders):
+        # private message?
+        if i >= max_public:
+            recipient = nick
+
+        # send the message
+        bot.say(reminder, recipient)
 
     # then send reminders (as public and/or private messages)
     if bot.config.tell.use_private_reminder:
         # send reminders with private messages
         for line in reminders:
-            bot.say(line, nick)
+            bot.msg(nick, line)
     else:
         # send up to 'maximum_public' reminders to the channel
         max_public = bot.config.tell.maximum_public
@@ -328,7 +344,7 @@ def message(bot, trigger):
         if reminders[max_public:]:
             bot.reply('Further messages sent privately')
             for line in reminders[max_public:]:
-                bot.say(line, nick)
+                bot.msg(nick, line)
 
     # save reminders left in memory
     with bot.memory['tell_lock']:

@@ -40,7 +40,9 @@ def get_info(number=None):
         url = 'https://xkcd.com/{}/info.0.json'.format(number)
     else:
         url = 'https://xkcd.com/info.0.json'
-    data = requests.get(url).json()
+    response = requests.get(url)
+    response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+    data = response.json()
     data['url'] = 'https://xkcd.com/' + str(data['num'])
     return data
 

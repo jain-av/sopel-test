@@ -54,13 +54,346 @@ def setup(bot):
 
 class InvalidSection(Exception):
     def __init__(self, section):
-        super(InvalidSection, self).__init__(self, 'Section [{}] does not exist.'.format(section))
+        super(InvalidSection, self).__init__('Section [{}] does not exist.'.format(section))
         self.section = section
 
 
 class InvalidSectionOption(Exception):
     def __init__(self, section, option):
-        super(InvalidSectionOption, self).__init__(self, 'Section [{}] does not have option \'{}\'.'.format(section, option))
+        super(InvalidSectionOption, self).__init__('Section [{}] does not have option \'{}\'.'.format(section, option))
+        self.section = section
+        self.option = option
+
+
+def _get_config_channels(channels):
+    """List"""
+    for channel_info in channels:
+        if ' ' in channel_info:
+            yield channel_info.split(' ', 1)
+        else:
+            yield (channel_info, None)
+
+
+def _set_config_channels(bot, channels):
+    bot.config.core.channels = [
+        ' '.join([part for part in items if part])
+        for items in channels.items()
+    ]
+    bot.config.save()
+
+
+def _join(bot, channel, key=None, save=True):
+    if not channel:
+        return
+
+    if not key:
+        bot.join(channel)
+    else:
+        bot.join(channel, key)
+
+    if save:
+        channels = dict(_get_config_channels(bot.config.core.channels))
+        # save only if channel is new or key has been changed
+        if channel not in channels or channels[channel] != key:
+            channels[channel] = key
+            _set_config_channels(bot, channels)
+            LOGGER.info('Added "%s" to core.channels.', channel)
+
+
+def _part(bot, channel, msg=None, save=True):
+    bot.part(channel, msg or None)
+
+    if save:
+        channels = dict(_get_config_channels(bot.config.core.channels))
+        if channel in channels:
+            del channels[channel]
+            _set_config_channels(bot, channels)
+            LOGGER.info('Removed "%s" from core.channels.', channel)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('join')
+@plugin.priority('low')
+@plugin.example('.join #example key', user_help=True)
+@plugin.example('.join #example', user_help=True)
+def join(bot, trigger):
+    """Join the specified channel. This is an admin-only command."""
+    channel, key = trigger.group(3), trigger.group(4)
+    if not channel:
+        bot.reply(ERROR_JOIN_NO_CHANNEL)
+        return
+
+    _join(bot, channel, key)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('tmpjoin')
+@plugin.priority('low')
+@plugin.example('.tmpjoin #example key', user_help=True)
+@plugin.example('.tmpjoin #example', user_help=True)
+def temporary_join(bot, trigger):
+    """Like ``join``, without saving. This is an admin-only command.
+
+    Unlike the ``join`` command, ``tmpjoin`` won't remember the channel upon
+    restarting the bot.
+    """
+    channel, key = trigger.group(3), trigger.group(4)
+    if not channel:
+        bot.reply(ERROR_JOIN_NO_CHANNEL)
+        return
+
+    _join(bot, channel, key, save=False)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('part')
+@plugin.priority('low')
+@plugin.example('.part #example')
+def part(bot, trigger):
+    """Part the specified channel. This is an admin-only command."""
+    channel, _sep, part_msg = trigger.group(2).partition(' ')
+    if not channel:
+        bot.reply(ERROR_PART_NO_CHANNEL)
+        return
+
+    _part(bot, channel, part_msg)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('tmppart')
+@plugin.priority('low')
+@plugin.example('.tmppart #example')
+def temporary_part(bot, trigger):
+    """Like ``part``, without saving. This is an admin-only command.
+
+    Unlike the ``part`` command, ``tmppart`` will rejoin the channel upon
+    restarting the bot.
+    """
+    channel, _sep, part_msg = trigger.group(2).partition(' ')
+    if not channel:
+        bot.reply(ERROR_PART_NO_CHANNEL)
+        return
+
+    _part(bot, channel, part_msg, save=False)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('chanlist', 'channels')
+@plugin.priority('low')
+def channel_list(bot, trigger):
+    """Show channels Sopel is in."""
+    channels = ', '.join(sorted(bot.channels.keys()))
+
+    # conservative assumption about how much room we have in the line to make
+    # sure `max_messages` won't actually truncate anything
+    bot.say(channels, max_messages=1 + len(channels) // 400)
+
+
+@plugin.require_privmsg
+@plugin.require_owner
+@plugin.command('restart')
+@plugin.priority('low')
+def restart(bot, trigger):
+    """Restart the bot. This is an owner-only command."""
+    quit_message = trigger.group(2)
+    default_message = 'Restarting on command from %s.' % trigger.nick
+    if not quit_message:
+        quit_message = default_message
+
+    LOGGER.info(default_message)
+    bot.restart(quit_message)
+
+
+@plugin.require_privmsg
+@plugin.require_owner
+@plugin.command('quit')
+@plugin.priority('low')
+def quit(bot, trigger):
+    """Quit from the server. This is an owner-only command."""
+    quit_message = trigger.group(2)
+    default_message = 'Quitting on command from %s.' % trigger.nick
+    if not quit_message:
+        quit_message = default_message
+
+    LOGGER.info(default_message)
+    bot.quit(quit_message)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('say', 'msg')
+@plugin.priority('low')
+@plugin.example('.say #YourPants Does anyone else smell neurotoxin?')
+def say(bot, trigger):
+    """
+    Send a message to a given channel or nick. Can only be done in privmsg by
+    an admin.
+    """
+    if trigger.group(2) is None:
+        bot.reply(ERROR_NOTHING_TO_SAY)
+        return
+
+    channel, _sep, message = trigger.group(2).partition(' ')
+    message = message.strip()
+    if not channel or not message:
+        bot.reply(ERROR_NOTHING_TO_SAY)
+        return
+
+    bot.say(message, channel)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('me')
+@plugin.priority('low')
+def me(bot, trigger):
+    """
+    Send an ACTION (/me) to a given channel or nick. Can only be done in
+    privmsg by an admin.
+    """
+    if trigger.group(2) is None:
+        bot.reply(ERROR_NOTHING_TO_SAY)
+        return
+
+    channel, _sep, action = trigger.group(2).partition(' ')
+    action = action.strip()
+    if not channel or not action:
+        bot.reply(ERROR_NOTHING_TO_SAY)
+        return
+
+    bot.action(action, channel)
+
+
+@plugin.event('INVITE')
+@plugin.priority('low')
+def invite_join(bot, trigger):
+    """Join a channel Sopel is invited to, if the inviter is an admin."""
+    channel = trigger.args[1]
+    if trigger.admin:
+        LOGGER.info(
+            'Got invited to "%s" by an admin.', channel)
+        bot.join(channel)
+    elif bot.config.admin.auto_accept_invite:
+        LOGGER.info(
+            'Got invited to "%s"; admin.auto_accept_invite is on', channel)
+        bot.join(channel)
+    else:
+        LOGGER.info(
+            'Got invited to "%s"; admin.auto_accept_invite is off.', channel)
+
+
+@plugin.event('KICK')
+@plugin.priority('low')
+def hold_ground(bot, trigger):
+    """
+    This function monitors all kicks across all channels Sopel is in. If it
+    detects that it is the one kicked it'll automatically join that channel.
+
+    WARNING: This may not be needed and could cause problems if Sopel becomes
+    annoying. Please use this with caution.
+    """
+    if bot.nick != trigger.args[1]:
+        # not the bot; ignore
+        return
+
+    channel = trigger.sender
+    if bot.config.admin.hold_ground:
+        LOGGER.info('Got kicked from "%s"; admin.hold_ground is on.', channel)
+        bot.join(channel)
+    else:
+        LOGGER.info('Got kicked from "%s"; admin.hold_ground is off.', channel)
+
+
+@plugin.require_privmsg
+@plugin.require_admin
+@plugin.command('mode')
+@plugin.priority('low')
+def mode(bot, trigger):
+    """Set a user mode on Sopel. Can only be done in privmsg by an admin."""
+    mode = trigger.group(3)
+    if not mode:
+        bot.reply('What mode should I set?')
+
+    bot.write(('MODE', bot.nick, mode))
+
+
+def parse_section_option_value(config, trigger):
+    """Parse trigger for set/unset to get relevant config elements.
+
+    :param config: Sopel's config
+    :param trigger: IRC line trigger
+    :return: A tuple with ``(section, section_name, static_sec, option, value)``
+    :raises InvalidSection: section does not exist
+    :raises InvalidSectionOption: option does not exist for section
+
+# coding=utf-8
+"""
+admin.py - Sopel Admin Plugin
+Copyright 2010-2011, Sean B. Palmer (inamidst.com) and Michael Yanovich
+(yanovich.net)
+Copyright © 2012, Elad Alfassa, <elad@fedoraproject.org>
+Copyright 2013, Ari Koivula <ari@koivu.la>
+Copyright 2019, Florian Strzelecki, https://github.com/Exirel
+Licensed under the Eiffel Forum License 2.
+
+https://sopel.chat
+"""
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import logging
+
+from sopel import plugin
+from sopel.config import types
+
+LOGGER = logging.getLogger(__name__)
+
+ERROR_JOIN_NO_CHANNEL = 'Which channel should I join?'
+"""Error message when channel is missing from command arguments."""
+ERROR_PART_NO_CHANNEL = 'Which channel should I quit?'
+"""Error message when channel is missing from command arguments."""
+ERROR_NOTHING_TO_SAY = 'I need a channel and a message to talk.'
+"""Error message when channel and/or message are missing."""
+
+
+class AdminSection(types.StaticSection):
+    hold_ground = types.BooleanAttribute('hold_ground', default=False)
+    """Auto re-join on kick"""
+    auto_accept_invite = types.BooleanAttribute('auto_accept_invite', default=True)
+    """Auto-join channels when invited"""
+
+
+def configure(config):
+    """
+    | name | example | purpose |
+    | ---- | ------- | ------- |
+    | hold\\_ground | False | Auto-rejoin the channel after being kicked. |
+    | auto\\_accept\\_invite | True | Auto-join channels when invited. |
+    """
+    config.define_section('admin', AdminSection)
+    config.admin.configure_setting('hold_ground',
+                                   "Automatically re-join after being kicked?")
+    config.admin.configure_setting('auto_accept_invite',
+                                   'Automatically join channels when invited?')
+
+
+def setup(bot):
+    bot.config.define_section('admin', AdminSection)
+
+
+class InvalidSection(Exception):
+    def __init__(self, section):
+        super(InvalidSection, self).__init__('Section [{}] does not exist.'.format(section))
+        self.section = section
+
+
+class InvalidSectionOption(Exception):
+    def __init__(self, section, option):
+        super(InvalidSectionOption, self).__init__('Section [{}] does not have option \'{}\'.'.format(section, option))
         self.section = section
         self.option = option
 
@@ -389,7 +722,7 @@ def set_config(bot, trigger):
         bot.say('Usage: {}set section.option [value]'.format(bot.config.core.help_prefix))
         return
     except (InvalidSection, InvalidSectionOption) as exc:
-        bot.say(exc.args[1])
+        bot.say(exc.args[0])
         return
 
     # Get a descriptor class for the option if it's a static section
@@ -451,7 +784,7 @@ def unset_config(bot, trigger):
         bot.say('Usage: {}unset section.option [value]'.format(bot.config.core.help_prefix))
         return
     except (InvalidSection, InvalidSectionOption) as exc:
-        bot.say(exc.args[1])
+        bot.say(exc.args[0])
         return
 
     if value:

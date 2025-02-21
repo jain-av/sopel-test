@@ -9,11 +9,7 @@ https://sopel.chat/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 from sopel import plugin
-
-try:
-    from urllib.parse import urlencode
-except ImportError:
-    from urllib import urlencode
+from urllib.parse import urlencode
 
 
 @plugin.command('lmgtfy', 'lmgify', 'gify', 'gtfy')

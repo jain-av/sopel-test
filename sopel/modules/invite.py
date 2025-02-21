@@ -64,12 +64,12 @@ def invite(bot, trigger):
     Invite the given user to the current channel, or (with optional
     second argument) another channel that Sopel is in.
     """
-    if not trigger.group(3):
+    if not trigger.group(2):
         return bot.reply("Whom should I invite?")
-    user = trigger.group(3)
+    user = trigger.group(2)
 
-    if trigger.group(4):
-        channel = trigger.group(4)
+    if trigger.group(3):
+        channel = trigger.group(3)
     else:
         if trigger.is_privmsg:
             return bot.say(

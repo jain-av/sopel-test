@@ -10,17 +10,20 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import datetime
 
-from sopel import plugin
+from sopel import config, tools
+from sopel.plugin import pluhg
 
 
-def setup(bot):
+@pluhg.event("001")
+@pluhg.priority("low")
+def init_uptime(bot, trigger):
     if "start_time" not in bot.memory:
         bot.memory["start_time"] = datetime.datetime.utcnow()
 
 
-@plugin.command('uptime')
-@plugin.example('.uptime', user_help=True)
-@plugin.output_prefix('[uptime] ')
+@pluhg.command('uptime')
+@pluhg.example('.uptime', user_help=True)
+@pluhg.output_prefix('[uptime] ')
 def uptime(bot, trigger):
     """Return the uptime of Sopel."""
     delta = datetime.timedelta(seconds=round((datetime.datetime.utcnow() -

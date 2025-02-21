@@ -20,6 +20,361 @@ from sopel import formatting, plugin, tools
 from sopel.config import types
 from sopel.modules.url import find_title
 
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+
+UNTITLED_MEETING = "Untitled meeting"
+
+
+class MeetbotSection(types.StaticSection):
+    """Configuration file section definition"""
+
+    meeting_log_path = types.FilenameAttribute(
+        "meeting_log_path",
+        relative=False,
+        directory=True,
+        default="~/www/meetings")
+    """Path to meeting logs storage directory.
+
+    This should be an absolute path, accessible on a webserver.
+    """
+
+    meeting_log_baseurl = types.ValidatedAttribute(
+        "meeting_log_baseurl",
+        default="http://localhost/~sopel/meetings")
+    """Base URL for the meeting logs directory."""
+
+    database_uri = types.ValidatedAttribute(
+        "database_uri",
+        default="sqlite:///meetbot.db")
+    """URI for the database."""
+
+
+def configure(config):
+    """
+    | name | example | purpose |
+    | ---- | ------- | ------- |
+    | meeting\\_log\\_path | /home/sopel/www/meetings | Path to meeting logs storage directory (should be an absolute path, accessible on a webserver) |
+    | meeting\\_log\\_baseurl | http://example.com/~sopel/meetings | Base URL for the meeting logs directory |
+    | database\\_uri | sqlite:///meetbot.db | URI for the database |
+    """
+    config.define_section("meetbot", MeetbotSection)
+    config.meetbot.configure_setting(
+        "meeting_log_path", "Enter the directory to store logs in."
+    )
+    config.meetbot.configure_setting(
+        "meeting_log_baseurl", "Enter the base URL for the meeting logs."
+    )
+    config.meetbot.configure_setting(
+        "database_uri", "Enter the URI for the database."
+    )
+
+
+Base = declarative_base()
+
+
+class Meeting(Base):
+    __tablename__ = 'meetings'
+
+    id = Column(Integer, primary_key=True)
+    channel = Column(String)
+    start_time = Column(DateTime)
+    head = Column(String)
+    title = Column(String)
+    current_subject = Column(String)
+    running = Column(Boolean, default=False)
+
+
+class Chair(Base):
+    __tablename__ = 'chairs'
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer)  # Foreign Key to Meetings table
+    nick = Column(String)
+
+
+class Comment(Base):
+    __tablename__ = 'comments'
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer)  # Foreign Key to Meetings table
+    text = Column(String)
+
+
+def setup(bot):
+    bot.config.define_section("meetbot", MeetbotSection)
+
+    # Initialize database
+    engine = create_engine(bot.config.meetbot.database_uri)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    bot.db_session = Session()
+
+
+meetings_dict = collections.defaultdict(dict)  # Saves metadata about currently running meetings
+"""
+meetings_dict is a 2D dict.
+
+Each meeting should have:
+channel
+time of start
+head (can stop the meeting, plus all abilities of chairs)
+chairs (can add infolines to the logs)
+title
+current subject
+comments (what people who aren't voiced want to add)
+
+Using channel as the meeting ID as there can't be more than one meeting in a
+channel at the same time.
+"""
+
+# To be defined on meeting start as part of sanity checks, used by logging
+# functions so we don't have to pass them bot
+meeting_log_path = ""
+meeting_log_baseurl = ""
+
+# A dict of channels to the actions that have been created in them. This way
+# we can have .listactions spit them back out later on.
+meeting_actions = {}
+
+
+# Get the logfile name for the meeting in the requested channel
+# Used by all logging functions and web path
+def figure_logfile_name(channel):
+    if meetings_dict[channel]["title"] == UNTITLED_MEETING:
+        name = "untitled"
+    else:
+        name = meetings_dict[channel]["title"]
+    # Real simple sluggifying.
+    # May not handle unicode or unprintables well. Close enough.
+    for character in punctuation + whitespace:
+        name = name.replace(character, "-")
+    name = name.strip("-")
+    timestring = time.strftime(
+        "%Y-%m-%d-%H:%M", time.gmtime(meetings_dict[channel]["start"])
+    )
+    filename = timestring + "_" + name
+    return filename
+
+
+# Start HTML log
+def log_html_start(channel):
+    logfile_filename = os.path.join(
+        meeting_log_path + channel, figure_logfile_name(channel) + ".html"
+    )
+    logfile = codecs.open(logfile_filename, "a", encoding="utf-8")
+    timestring = time.strftime(
+        "%Y-%m-%d %H:%M", time.gmtime(meetings_dict[channel]["start"])
+    )
+    title = "%s at %s, %s" % (meetings_dict[channel]["title"], channel, timestring)
+    logfile.write(
+        (
+            "<!doctype html><html><head><meta charset='utf-8'>\n"
+            "<title>{title}</title>\n</head><body>\n<h1>{title}</h1>\n"
+        ).format(title=title)
+    )
+    logfile.write(
+        "<h4>Meeting started by %s</h4><ul>\n" % meetings_dict[channel]["head"]
+    )
+    logfile.close()
+
+
+# Write a list item in the HTML log
+def log_html_listitem(item, channel):
+    logfile_filename = os.path.join(
+        meeting_log_path + channel, figure_logfile_name(channel) + ".html"
+    )
+    logfile = codecs.open(logfile_filename, "a", encoding="utf-8")
+    logfile.write("<li>" + item + "</li>\n")
+    logfile.close()
+
+
+# End the HTML log
+def log_html_end(channel):
+    logfile_filename = os.path.join(
+        meeting_log_path + channel, figure_logfile_name(channel) + ".html"
+    )
+    logfile = codecs.open(logfile_filename, "a", encoding="utf-8")
+    current_time = time.strftime("%H:%M:%S", time.gmtime())
+    logfile.write("</ul>\n<h4>Meeting ended at %s UTC</h4>\n" % current_time)
+    plainlog_url = meeting_log_baseurl + tools.web.quote(
+        channel + "/" + figure_logfile_name(channel) + ".log"
+    )
+    logfile.write('<a href="%s">Full log</a>' % plainlog_url)
+    logfile.write("\n</body>\n</html>\n")
+    logfile.close()
+
+
+# Write a string to the plain text log
+def log_plain(item, channel):
+    logfile_filename = os.path.join(
+        meeting_log_path + channel, figure_logfile_name(channel) + ".log"
+    )
+    logfile = codecs.open(logfile_filename, "a", encoding="utf-8")
+    current_time = time.strftime("%H:%M:%S", time.gmtime())
+    logfile.write("[" + current_time + "] " + item + "\r\n")
+    logfile.close()
+
+
+# Check if a meeting is currently running
+def is_meeting_running(channel, session):
+    meeting = session.execute(select(Meeting).where(Meeting.channel == channel)).scalar_one_or_none()
+    return meeting is not None and meeting.running
+
+
+# Check if nick is a chair or head of the meeting
+def is_chair(nick, channel, session):
+    meeting = session.execute(select(Meeting).where(Meeting.channel == channel)).scalar_one_or_none()
+    if not meeting:
+        return False
+
+    is_head = nick.lower() == meeting.head
+    is_chair_nick = session.execute(select(Chair).where(Chair.meeting_id == meeting.id, Chair.nick == nick.lower())).scalar_one_or_none() is not None
+
+    return is_head or is_chair_nick
+
+
+# Start meeting (also performs all required sanity checks)
+@plugin.command("startmeeting")
+@plugin.example(".startmeeting", user_help=True)
+@plugin.example(".startmeeting Meeting Title", user_help=True)
+@plugin.require_chanmsg("Meetings can only be started in channels")
+def startmeeting(bot, trigger):
+    """
+    Start a meeting.\
+    See [meetbot plugin usage]({% link _usage/meetbot-plugin.md %})
+    """
+    session = bot.db_session
+
+    if is_meeting_running(trigger.sender, session):
+        bot.say("There is already an active meeting here!")
+        return
+
+    # Start the meeting
+    start_time = time.time()
+    if not trigger.group(2):
+        title = UNTITLED_MEETING
+    else:
+        title = trigger.group(2)
+    head = trigger.nick.lower()
+
+    meeting = Meeting(
+        channel=trigger.sender,
+        start_time=datetime.datetime.fromtimestamp(start_time),
+        head=head,
+        title=title,
+        running=True
+    )
+    session.add(meeting)
+    session.commit()
+
+    meetings_dict[trigger.sender]["start"] = start_time
+    meetings_dict[trigger.sender]["title"] = title
+    meetings_dict[trigger.sender]["head"] = head
+    meetings_dict[trigger.sender]["running"] = True
+    meetings_dict[trigger.sender]["comments"] = []
+
+    # Set up paths and URLs
+    global meeting_log_path
+    meeting_log_path = bot.config.meetbot.meeting_log_path
+    if not meeting_log_path.endswith(os.sep):
+        meeting_log_path += os.sep
+
+    global meeting_log_baseurl
+    meeting_log_baseurl = bot.config.meetbot.meeting_log_baseurl
+    if not meeting_log_baseurl.endswith("/"):
+        meeting_log_baseurl = meeting_log_baseurl + "/"
+
+    channel_log_path = meeting_log_path + trigger.sender
+    if not os.path.isdir(channel_log_path):
+        try:
+            os.makedirs(channel_log_path)
+        except Exception:  # TODO: Be specific
+            bot.say(
+                "Meeting not started: Couldn't create log directory for this channel"
+            )
+            meetings_dict[trigger.sender] = collections.defaultdict(dict)
+            raise
+    # Okay, meeting started!
+    log_plain("Meeting started by " + trigger.nick.lower(), trigger.sender)
+    log_html_start(trigger.sender)
+    meeting_actions[trigger.sender] = []
+    bot.say(
+        (
+            formatting.bold("Meeting started!") + " use {0}action, {0}agreed, "
+            "{0}info, {0}link, {0}chairs, {0}subject, and {0}comments to "
+            "control the meeting. To end the meeting, type {0}endmeeting"
+        ).format(bot.config.core.help_prefix)
+    )
+    bot.say(
+        (
+            "Users without speaking permission can participate by sending me "
+            "a PM with `{0}comment {1}` followed by their comment."
+        ).format(bot.config.core.help_prefix, trigger.sender)
+    )
+
+
+# Change the current subject (will appear as <h3> in the HTML log)
+@plugin.command("subject")
+@plugin.example(".subject roll call")
+def meetingsubject(bot, trigger):
+    """
+    Change the meeting subject.\
+    See [meetbot plugin usage]({% link _usage/meetbot-plugin.md %})
+    """
+    session = bot.db_session
+    if not is_meeting_running(trigger.sender, session):
+        bot.say("There is no active meeting")
+        return
+    if not trigger.group(2):
+        bot.say("What is the subject?")
+        return
+    if not is_chair(trigger.nick, trigger.sender, session):
+        bot.say("Only meeting head or chairs can do that")
+        return
+
+    meeting = session.execute(select(Meeting).where(Meeting.channel == trigger.sender)).scalar_one()
+    meeting.current_subject = trigger.group(2)
+    session.commit()
+
+    meetings_dict[trigger.sender]["current_subject"] = trigger.group(2)
+    logfile_filename = os.path.join(
+        meeting_log_path + trigger.sender, figure_logfile_name(trigger.sender) + ".html"
+    )
+    logfile = codecs.open(logfile_filename, "a", encoding="utf-8")
+    logfile.write("</ul><h3>" + trigger.group(2) + "</h3><ul>")
+    logfile.close()
+    log_plain(
+        "Current subject: {} (set by {})".format(trigger.group(2), trigger.nick),
+        trigger.sender,
+    )
+    bot.say(formatting.bold("Current subject:") + " " + trigger.group(2))
+
+# coding=utf-8
+"""
+meetbot.py - Sopel Meeting Logger Plugin
+This plugin is an attempt to implement some of the functionality of Debian's meetbot
+Copyright © 2012, Elad Alfassa, <elad@fedoraproject.org>
+Licensed under the Eiffel Forum License 2.
+
+https://sopel.chat
+"""
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import codecs
+import collections
+import os
+import re
+from string import punctuation, whitespace
+import time
+
+from sopel import formatting, plugin
+from sopel import tools  # Changed import
+from sopel.config import types
+from sopel.modules.url import find_title
+
 
 UNTITLED_MEETING = "Untitled meeting"
 

@@ -14,6 +14,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import ipaddress
 import logging
 import re
+from urllib.parse import urlparse
 
 import dns.resolver
 import requests
@@ -22,12 +23,6 @@ from urllib3.exceptions import LocationValueError
 from sopel import plugin, tools
 from sopel.config import types
 from sopel.tools import web
-
-# Python3 vs Python2
-try:
-    from urllib.parse import urlparse
-except ImportError:
-    from urlparse import urlparse
 
 LOGGER = logging.getLogger(__name__)
 USER_AGENT = (
@@ -280,6 +275,284 @@ def title_command(bot, trigger):
         bot.memory['last_seen_url'][trigger.sender] = url
         result_count += 1
 
+# coding=utf-8
+"""
+url.py - Sopel URL Title Plugin
+Copyright 2010-2011, Michael Yanovich (yanovich.net) & Kenneth Sham
+Copyright 2012-2013, Elsie Powell
+Copyright 2013, Lior Ramati <firerogue517@gmail.com>
+Copyright 2014, Elad Alfassa <elad@fedoraproject.org>
+Licensed under the Eiffel Forum License 2.
+
+https://sopel.chat
+"""
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import ipaddress
+import logging
+import re
+from typing import Optional, Tuple, Iterator
+
+import dns.resolver
+import requests
+from urllib3.exceptions import LocationValueError
+from urllib.parse import urlparse, urlencode
+
+from sopel import plugin, tools
+from sopel.config import types
+from sopel.tools import web
+
+LOGGER = logging.getLogger(__name__)
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/98.0.4758.102 Safari/537.36'
+)
+DEFAULT_HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8',
+    'Accept-Language': 'en,en-US;q=0,5',
+}
+# These are used to clean up the title tag before actually parsing it. Not the
+# world's best way to do this, but it'll do for now.
+TITLE_TAG_DATA = re.compile('<(/?)title( [^>]+)?>', re.IGNORECASE)
+QUOTED_TITLE = re.compile('[\'"]<title>[\'"]', re.IGNORECASE)
+# This is another regex that presumably does something important.
+RE_DCC = re.compile(r'(?i)dcc\ssend')
+# This sets the maximum number of bytes that should be read in order to find
+# the title. We don't want it too high, or a link to a big file/stream will
+# just keep downloading until there's no more memory. 640k ought to be enough
+# for anybody, but the modern web begs to differ.
+MAX_BYTES = 655360 * 2
+
+
+class UrlSection(types.StaticSection):
+    enable_auto_title = types.BooleanAttribute(
+        'enable_auto_title', default=True)
+    """Enable auto-title (enabled by default)"""
+    # TODO some validation rules maybe?
+    exclude = types.ListAttribute('exclude')
+    """A list of regular expressions to match URLs for which the title should not be shown."""
+    exclusion_char = types.ValidatedAttribute('exclusion_char', default='!')
+    """A character (or string) which, when immediately preceding a URL, will stop that URL's title from being shown."""
+    shorten_url_length = types.ValidatedAttribute(
+        'shorten_url_length', int, default=0)
+    """If greater than 0, the title fetcher will include a TinyURL version of links longer than this many characters."""
+    enable_private_resolution = types.BooleanAttribute(
+        'enable_private_resolution', default=False)
+    """Enable URL lookups for RFC1918 addresses"""
+    enable_dns_resolution = types.BooleanAttribute(
+        'enable_dns_resolution', default=False)
+    """Enable DNS resolution for all domains to validate if there are RFC1918 resolutions"""
+
+
+def configure(config):
+    """
+    | name | example | purpose |
+    | ---- | ------- | ------- |
+    | enable_auto_title | yes | Enable auto-title. |
+    | exclude | https?://git\\\\.io/.* | A list of regular expressions for URLs for which the title should not be shown. |
+    | exclusion\\_char | ! | A character (or string) which, when immediately preceding a URL, will stop that URL's title from being shown. |
+    | shorten\\_url\\_length | 72 | If greater than 0, the title fetcher will include a TinyURL version of links longer than this many characters. |
+    | enable\\_private\\_resolution | False | Enable URL lookups for RFC1918 addresses. |
+    | enable\\_dns\\_resolution | False | Enable DNS resolution for all domains to validate if there are RFC1918 resolutions. |
+    """
+    config.define_section('url', UrlSection)
+    config.url.configure_setting(
+        'enable_auto_title',
+        'Enable auto-title?'
+    )
+    config.url.configure_setting(
+        'exclude',
+        'Enter regular expressions for each URL you would like to exclude.'
+    )
+    config.url.configure_setting(
+        'exclusion_char',
+        'Enter a character which can be prefixed to suppress URL titling'
+    )
+    config.url.configure_setting(
+        'shorten_url_length',
+        'Enter how many characters a URL should be before the bot puts a'
+        ' shorter version of the URL in the title as a TinyURL link'
+        ' (0 to disable)'
+    )
+    config.url.configure_setting(
+        'enable_private_resolution',
+        'Enable URL lookups for RFC1918 addresses?'
+    )
+    config.url.configure_setting(
+        'enable_dns_resolution',
+        'Enable DNS resolution for all domains to validate if there are RFC1918 resolutions?'
+    )
+
+
+def setup(bot):
+    bot.config.define_section('url', UrlSection)
+
+    if bot.config.url.exclude:
+        regexes = [re.compile(s) for s in bot.config.url.exclude]
+    else:
+        regexes = []
+
+    # We're keeping these in their own list, rather than putting then in the
+    # callbacks list because 1, it's easier to deal with plugins that are still
+    # using this list, and not the newer callbacks list and 2, having a lambda
+    # just to pass is kinda ugly.
+    if 'url_exclude' not in bot.memory:
+        bot.memory['url_exclude'] = regexes
+    else:
+        exclude = bot.memory['url_exclude']
+        if regexes:
+            exclude.extend(regexes)
+        bot.memory['url_exclude'] = exclude
+
+    # Ensure last_seen_url is in memory
+    if 'last_seen_url' not in bot.memory:
+        bot.memory['last_seen_url'] = tools.SopelIdentifierMemory()
+
+    # Initialize shortened_urls as a dict if it doesn't exist.
+    if 'shortened_urls' not in bot.memory:
+        bot.memory['shortened_urls'] = tools.SopelMemory()
+
+
+def shutdown(bot):
+    # Unset `url_exclude` and `last_seen_url`, but not `shortened_urls`;
+    # clearing `shortened_urls` will increase API calls. Leaving it in memory
+    # should not lead to unexpected behavior.
+    for key in ['url_exclude', 'last_seen_url']:
+        try:
+            del bot.memory[key]
+        except KeyError:
+            pass
+
+
+@plugin.command('urlexclude', 'urlpexclude', 'urlban', 'urlpban')
+@plugin.example('.urlpexclude example\\.com/\\w+', user_help=True)
+@plugin.example('.urlexclude example.com/path', user_help=True)
+@plugin.output_prefix('[url] ')
+def url_ban(bot, trigger):
+    """Exclude a URL from auto title.
+
+    Use ``urlpexclude`` to exclude a pattern instead of a URL.
+    """
+    url = trigger.group(2)
+
+    if not url:
+        bot.reply('This command requires a URL to exclude.')
+        return
+
+    if trigger.group(1) in ['urlpexclude', 'urlpban']:
+        # validate regex pattern
+        try:
+            re.compile(url)
+        except re.error as err:
+            bot.reply('Invalid regex pattern: %s' % err)
+            return
+    else:
+        # escape the URL to ensure a valid pattern
+        url = re.escape(url)
+
+    patterns = bot.settings.url.exclude
+
+    if url in patterns:
+        bot.reply('This URL is already excluded from auto title.')
+        return
+
+    # update settings
+    patterns.append(url)
+    bot.settings.url.exclude = patterns  # set the config option
+    bot.settings.save()
+    LOGGER.info('%s excluded the URL pattern "%s"', trigger.nick, url)
+
+    # re-compile
+    bot.memory['url_exclude'] = [re.compile(s) for s in patterns]
+
+    # tell the user
+    bot.reply('This URL is now excluded from auto title.')
+
+
+@plugin.command('urlallow', 'urlpallow', 'urlunban', 'urlpunban')
+@plugin.example('.urlpallow example\\.com/\\w+', user_help=True)
+@plugin.example('.urlallow example.com/path', user_help=True)
+@plugin.output_prefix('[url] ')
+def url_unban(bot, trigger):
+    """Allow a URL for auto title.
+
+    Use ``urlpallow`` to allow a pattern instead of a URL.
+    """
+    url = trigger.group(2)
+
+    if not url:
+        bot.reply('This command requires a URL to allow.')
+        return
+
+    if trigger.group(1) in ['urlpallow', 'urlpunban']:
+        # validate regex pattern
+        try:
+            re.compile(url)
+        except re.error as err:
+            bot.reply('Invalid regex pattern: %s' % err)
+            return
+    else:
+        # escape the URL to ensure a valid pattern
+        url = re.escape(url)
+
+    patterns = bot.settings.url.exclude
+
+    if url not in patterns:
+        bot.reply('This URL was not excluded from auto title.')
+        return
+
+    # update settings
+    patterns.remove(url)
+    bot.settings.url.exclude = patterns  # set the config option
+    bot.settings.save()
+    LOGGER.info('%s allowed the URL pattern "%s"', trigger.nick, url)
+
+    # re-compile
+    bot.memory['url_exclude'] = [re.compile(s) for s in patterns]
+
+    # tell the user
+    bot.reply('This URL is not excluded from auto title anymore.')
+
+
+@plugin.command('title')
+@plugin.example(
+    '.title https://www.google.com',
+    'Google | www.google.com',
+    online=True, vcr=True)
+@plugin.output_prefix('[url] ')
+def title_command(bot, trigger):
+    """
+    Show the title or URL information for the given URL, or the last URL seen
+    in this channel.
+    """
+    if not trigger.group(2):
+        if trigger.sender not in bot.memory['last_seen_url']:
+            return
+        matched = check_callbacks(
+            bot, bot.memory['last_seen_url'][trigger.sender])
+        if matched:
+            return
+        else:
+            urls = [bot.memory['last_seen_url'][trigger.sender]]
+    else:
+        urls = list(  # needs to be a list so len() can be checked later
+            web.search_urls(
+                trigger,
+                exclusion_char=bot.config.url.exclusion_char
+            )
+        )
+
+    result_count = 0
+    for url, title, domain, tinyurl in process_urls(bot, trigger, urls):
+        message = '%s | %s' % (title, domain)
+        if tinyurl:
+            message += ' ( %s )' % tinyurl
+        bot.reply(message)
+        bot.memory['last_seen_url'][trigger.sender] = url
+        result_count += 1
+
     expected_count = len(urls)
     if result_count < expected_count:
         if expected_count == 1:
@@ -324,7 +597,7 @@ def title_auto(bot, trigger):
             bot.memory['last_seen_url'][trigger.sender] = url
 
 
-def process_urls(bot, trigger, urls):
+def process_urls(bot, trigger, urls) -> Iterator[Tuple[str, str, str, Optional[str]]]:
     """
     For each URL in the list, ensure that it isn't handled by another plugin.
     If not, find where it redirects to, if anywhere. If that redirected URL
@@ -347,19 +620,31 @@ def process_urls(bot, trigger, urls):
             parsed = urlparse(url)
             # Check if it's an address like http://192.168.1.1
             try:
-                if ipaddress.ip_address(parsed.hostname).is_private or ipaddress.ip_address(parsed.hostname).is_loopback:
-                    LOGGER.debug('Ignoring private URL: %s', url)
-                    continue
+                if parsed.hostname:
+                    ip_address = ipaddress.ip_address(parsed.hostname)
+                    if ip_address.is_private or ip_address.is_loopback:
+                        LOGGER.debug('Ignoring private URL: %s', url)
+                        continue
             except ValueError:
                 pass
 
             # Check if domains are RFC1918 addresses if enable_dns_resolutions is set
             if bot.config.url.enable_dns_resolution:
                 private = False
-                for result in dns.resolver.query(parsed.hostname):
-                    if ipaddress.ip_address(result).is_private or ipaddress.ip_address(parsed.hostname).is_loopback:
-                        private = True
-                        break
+                try:
+                    for result in dns.resolver.resolve(parsed.hostname):
+                        if isinstance(result, ipaddress.IPv4Address) or isinstance(result, ipaddress.IPv6Address):
+                            if result.is_private or result.is_loopback:
+                                private = True
+                                break
+                        else:
+                            ip_address = ipaddress.ip_address(str(result))
+                            if ip_address.is_private or ip_address.is_loopback:
+                                private = True
+                                break
+                except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
+                    LOGGER.debug('DNS resolution failed for %s', parsed.hostname)
+                    continue
                 if private:
                     LOGGER.debug('Ignoring private URL: %s', url)
                     continue
@@ -411,11 +696,12 @@ def check_callbacks(bot, url):
     )
 
 
-def find_title(url, verify=True):
+def find_title(url, verify=True) -> Optional[str]:
     """Return the title for the given URL."""
     try:
         response = requests.get(url, stream=True, verify=verify,
-                                headers=DEFAULT_HEADERS)
+                                headers=DEFAULT_HEADERS, timeout=10)  # Added timeout
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
         content = b''
         for byte in response.iter_content(chunk_size=512):
             content += byte
@@ -425,11 +711,10 @@ def find_title(url, verify=True):
         # Need to close the connection because we have not read all
         # the data
         response.close()
-    except requests.exceptions.ConnectionError:
-        LOGGER.debug('Unable to reach URL: %s', url, exc_info=True)
+    except requests.exceptions.RequestException as e:  # Catch all request exceptions
+        LOGGER.debug('Unable to reach URL: %s - %s', url, str(e))
         return None
     except (
-        requests.exceptions.InvalidURL,  # e.g. http:///
         UnicodeError,  # e.g. http://.example.com (urllib3<1.26)
         LocationValueError,  # e.g. http://.example.com (urllib3>=1.26)
     ):
@@ -444,7 +729,7 @@ def find_title(url, verify=True):
     start = content.rfind('<title>')
     end = content.rfind('</title>')
     if start == -1 or end == -1:
-        return
+        return None
     title = web.decode(content[start + 7:end])
     title = title.strip()[:200]
 
@@ -491,12 +776,12 @@ def get_or_create_shorturl(bot, url):
     return tinyurl
 
 
-def get_tinyurl(url):
+def get_tinyurl(url) -> Optional[str]:
     """Returns a shortened tinyURL link of the URL"""
     base_url = "https://tinyurl.com/api-create.php"
-    tinyurl = "%s?%s" % (base_url, web.urlencode({'url': url}))
+    tinyurl = "%s?%s" % (base_url, urlencode({'url': url}))
     try:
-        res = requests.get(tinyurl)
+        res = requests.get(tinyurl, timeout=5)
         res.raise_for_status()
     except requests.exceptions.RequestException:
         return None

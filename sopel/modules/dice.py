@@ -15,7 +15,11 @@ import re
 
 from sopel import plugin
 from sopel.tools.calculation import eval_equation
+from sqlalchemy import create_engine, Column, Integer, String, Identity
+from sqlalchemy.orm import Session
+from sqlalchemy.ext.declarative import declarative_base
 
+Base = declarative_base()
 
 class DicePouch:
     def __init__(self, num_of_die, type_of_die, addition):

@@ -272,7 +272,8 @@ def exchange_cmd(bot, trigger):
         return
 
     match = EXCHANGE_REGEX.match(trigger.group(2))
-    exchange(bot, match)
+    if match:
+        exchange(bot, match)
 
 
 @plugin.rule(EXCHANGE_REGEX)
@@ -280,5 +281,6 @@ def exchange_cmd(bot, trigger):
 @plugin.output_prefix(PLUGIN_OUTPUT_PREFIX)
 def exchange_re(bot, trigger):
     if bot.config.currency.auto_convert:
-        match = EXCHANGE_REGEX.match(trigger)
-        exchange(bot, match)
+        match = EXCHANGE_REGEX.match(trigger.group(0))
+        if match:
+            exchange(bot, match)

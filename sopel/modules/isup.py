@@ -8,7 +8,7 @@ https://sopel.chat
 """
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import requests
+import httpx
 
 from sopel import plugin
 
@@ -65,25 +65,26 @@ def handle_isup(bot, trigger, secure=True):
         return
 
     try:
-        response = requests.head(site, verify=secure, timeout=(10.0, 5.0))
+        with httpx.Client(verify=secure, timeout=(10.0, 5.0)) as client:
+            response = client.head(site)
         response.raise_for_status()
-    except requests.exceptions.SSLError:
+    except httpx.InvalidSSLCertificate:
         bot.say(
             '{} looks down to me (SSL error). Try using `{}isupinsecure`.'
             .format(site, bot.config.core.help_prefix))
-    except requests.HTTPError:
+    except httpx.HTTPStatusError as exc:
         bot.say(
             '{} looks down to me (HTTP {} "{}").'
-            .format(site, response.status_code, response.reason))
-    except requests.ConnectTimeout:
+            .format(site, exc.response.status_code, exc.response.reason_phrase))
+    except httpx.ConnectError:
         bot.say(
             '{} looks down to me (timed out while connecting).'
             .format(site))
-    except requests.ReadTimeout:
+    except httpx.ReadTimeout:
         bot.say(
             '{} looks down to me (timed out waiting for reply).'
             .format(site))
-    except requests.ConnectionError:
+    except httpx.ConnectError:
         bot.say(
             '{} looks down to me (connection error).'
             .format(site))

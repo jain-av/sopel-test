@@ -316,17 +316,16 @@ def update_channel_format(bot, trigger):
     bot.db.set_channel_value(trigger.sender, 'time_format', tformat)
 
     try:
-        timef = format_time(db=bot.db, zone=tz, channel=trigger.sender)
+        timef = format_time(db=bot.db, config=bot.config, zone=tz, nick=None, channel=trigger.sender)
     except Exception:  # TODO: Be specific
         bot.reply(ERROR_INVALID_FORMAT)
         # New format doesn't work. Revert save in database.
         bot.db.set_channel_value(trigger.sender, 'time_format', old_format)
         return
-    bot.db.set_channel_value(trigger.sender, 'time_format', tformat)
 
-    help_prefix = bot.settings.core.help_prefix
+    help_prefix = bot.config.core.help_prefix
     set_command = '%ssettz' % help_prefix
-    channel_command = '%schanneltz' % help_prefix
+    channel_command = '%ssetctz' % help_prefix
     bot.say("Times in this channel will now appear as %s "
             "unless a user has their own format set. (If the timezone"
             " is wrong, you might try the %s and %s "
