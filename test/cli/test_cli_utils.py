@@ -5,6 +5,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import argparse
 from contextlib import contextmanager
 import os
+from pathlib import Path
 
 import pytest
 
@@ -40,13 +41,14 @@ def cd(newdir):
 
 
 @pytest.fixture
-def config_dir(tmpdir):
+def config_dir(tmp_path):
     """Pytest fixture used to generate a temporary configuration directory"""
-    test_dir = tmpdir.mkdir("config")
-    test_dir.join('config.cfg').write('')
-    test_dir.join('extra.ini').write('')
-    test_dir.join('module.cfg').write('')
-    test_dir.join('README').write('')
+    test_dir = tmp_path / "config"
+    test_dir.mkdir()
+    (test_dir / 'config.cfg').write_text('')
+    (test_dir / 'extra.ini').write_text('')
+    (test_dir / 'module.cfg').write_text('')
+    (test_dir / 'README').write_text('')
 
     return test_dir
 
@@ -59,10 +61,11 @@ def default_empty_config_env(monkeypatch):
 
 
 @pytest.fixture
-def env_dir(tmpdir):
+def env_dir(tmp_path):
     """Pytest fixture used to generate an extra (external) config directory"""
-    test_dir = tmpdir.mkdir("fromenv")
-    test_dir.join('fromenv.cfg').write('')
+    test_dir = tmp_path / "fromenv"
+    test_dir.mkdir()
+    (test_dir / 'fromenv.cfg').write_text('')
 
     return test_dir
 
@@ -84,7 +87,7 @@ def test_yellow():
 
 def test_enumerate_configs(config_dir):
     """Assert function retrieves only .cfg files by default"""
-    results = list(enumerate_configs(config_dir.strpath))
+    results = list(enumerate_configs(str(config_dir)))
 
     assert 'config.cfg' in results
     assert 'module.cfg' in results
@@ -100,7 +103,7 @@ def test_enumerate_configs_not_a_directory():
 
 def test_enumerate_configs_extension(config_dir):
     """Assert function retrieves only files with the given extension"""
-    results = list(enumerate_configs(config_dir.strpath, '.ini'))
+    results = list(enumerate_configs(str(config_dir), '.ini'))
 
     assert 'config.cfg' not in results
     assert 'module.cfg' not in results
@@ -109,41 +112,44 @@ def test_enumerate_configs_extension(config_dir):
     assert len(results) == 1
 
 
-def test_find_config_local(tmpdir, config_dir):
+def test_find_config_local(tmp_path, config_dir):
     """Assert function retrieves configuration file from working dir first"""
-    working_dir = tmpdir.mkdir("working")
-    working_dir.join('local.cfg').write('')
+    working_dir = tmp_path / "working"
+    working_dir.mkdir()
+    (working_dir / 'local.cfg').write_text('')
 
-    with cd(working_dir.strpath):
-        found_config = find_config(config_dir.strpath, 'local.cfg')
-        assert found_config == working_dir.join('local.cfg').strpath
+    with cd(str(working_dir)):
+        found_config = find_config(str(config_dir), 'local.cfg')
+        assert found_config == str(working_dir / 'local.cfg')
 
-        found_config = find_config(config_dir.strpath, 'local')
-        assert found_config == config_dir.join('local').strpath
+        found_config = find_config(str(config_dir), 'local')
+        assert found_config == str(config_dir / 'local')
 
 
-def test_find_config_default(tmpdir, config_dir):
+def test_find_config_default(tmp_path, config_dir):
     """Assert function retrieves configuration file from given config dir"""
-    working_dir = tmpdir.mkdir("working")
-    working_dir.join('local.cfg').write('')
+    working_dir = tmp_path / "working"
+    working_dir.mkdir()
+    (working_dir / 'local.cfg').write_text('')
 
-    with cd(working_dir.strpath):
-        found_config = find_config(config_dir.strpath, 'config')
-        assert found_config == config_dir.join('config.cfg').strpath
+    with cd(str(working_dir)):
+        found_config = find_config(str(config_dir), 'config')
+        assert found_config == str(config_dir / 'config.cfg')
 
-        found_config = find_config(config_dir.strpath, 'config.cfg')
-        assert found_config == config_dir.join('config.cfg').strpath
+        found_config = find_config(str(config_dir), 'config.cfg')
+        assert found_config == str(config_dir / 'config.cfg')
 
 
-def test_find_config_extension(tmpdir, config_dir):
+def test_find_config_extension(tmp_path, config_dir):
     """Assert function retrieves configuration file with the given extension"""
-    working_dir = tmpdir.mkdir("working")
-    working_dir.join('local.cfg').write('')
+    working_dir = tmp_path / "working"
+    working_dir.mkdir()
+    (working_dir / 'local.cfg').write_text('')
 
-    with cd(working_dir.strpath):
+    with cd(str(working_dir)):
         found_config = find_config(
-            config_dir.strpath, 'extra', '.ini')
-        assert found_config == config_dir.join('extra.ini').strpath
+            str(config_dir), 'extra', '.ini')
+        assert found_config == str(config_dir / 'extra.ini')
 
 
 def test_add_common_arguments():
@@ -234,12 +240,12 @@ def test_get_many_text(items, expected):
 
 
 def test_load_settings(config_dir):
-    config_dir.join('config.cfg').write(TMP_CONFIG)
+    (config_dir / 'config.cfg').write_text(TMP_CONFIG)
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
 
     options = parser.parse_args([
-        '--config-dir', config_dir.strpath,
+        '--config-dir', str(config_dir),
         '-c', 'config.cfg',
     ])
 
@@ -250,30 +256,30 @@ def test_load_settings(config_dir):
 
 def test_load_settings_arg_priority_over_env(monkeypatch, config_dir, env_dir):
     monkeypatch.setenv('SOPEL_CONFIG', 'fromenv')
-    monkeypatch.setenv('SOPEL_CONFIG_DIR', env_dir.strpath)
+    monkeypatch.setenv('SOPEL_CONFIG_DIR', str(env_dir))
 
-    config_dir.join('fromenv.cfg').write(TMP_CONFIG)
-    config_dir.join('fromarg.cfg').write(TMP_CONFIG)
+    (config_dir / 'fromenv.cfg').write_text(TMP_CONFIG)
+    (config_dir / 'fromarg.cfg').write_text(TMP_CONFIG)
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
 
     options = parser.parse_args([
-        '--config-dir', config_dir.strpath,
+        '--config-dir', str(config_dir),
         '-c', 'fromarg',
     ])
 
     settings = load_settings(options)
     assert isinstance(settings, config.Config)
     assert settings.basename == 'fromarg'
-    assert os.path.dirname(settings.filename) == config_dir.strpath
+    assert os.path.dirname(settings.filename) == str(config_dir)
 
 
 def test_load_settings_default(config_dir):
-    config_dir.join('default.cfg').write(TMP_CONFIG)
+    (config_dir / 'default.cfg').write_text(TMP_CONFIG)
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
 
-    options = parser.parse_args(['--config-dir', config_dir.strpath])
+    options = parser.parse_args(['--config-dir', str(config_dir)])
 
     settings = load_settings(options)
     assert isinstance(settings, config.Config)
@@ -281,10 +287,10 @@ def test_load_settings_default(config_dir):
 
 def test_load_settings_default_env_var(monkeypatch, config_dir, env_dir):
     monkeypatch.setenv('SOPEL_CONFIG', 'fromenv')
-    monkeypatch.setenv('SOPEL_CONFIG_DIR', env_dir.strpath)
+    monkeypatch.setenv('SOPEL_CONFIG_DIR', str(env_dir))
 
-    config_dir.join('config.cfg').write(TMP_CONFIG)
-    env_dir.join('fromenv.cfg').write(TMP_CONFIG)
+    (config_dir / 'config.cfg').write_text(TMP_CONFIG)
+    (env_dir / 'fromenv.cfg').write_text(TMP_CONFIG)
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
 
@@ -293,14 +299,14 @@ def test_load_settings_default_env_var(monkeypatch, config_dir, env_dir):
     settings = load_settings(options)
     assert isinstance(settings, config.Config)
     assert settings.basename == 'fromenv'
-    assert os.path.dirname(settings.filename) == env_dir.strpath
+    assert os.path.dirname(settings.filename) == str(env_dir)
 
 
 def test_load_settings_default_not_found(config_dir):
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
 
-    options = parser.parse_args(['--config-dir', config_dir.strpath])
+    options = parser.parse_args(['--config-dir', str(config_dir)])
 
     with pytest.raises(config.ConfigurationNotFound):
         load_settings(options)
@@ -311,9 +317,10 @@ def test_load_settings_invalid(config_dir):
     add_common_arguments(parser)
 
     options = parser.parse_args([
-        '--config-dir', config_dir.strpath,
+        '--config-dir', str(config_dir),
         '-c', 'config.cfg',
     ])
 
+    (config_dir / 'config.cfg').write_text('')  # Ensure file exists but is empty
     with pytest.raises(ValueError):  # no [core] section
         load_settings(options)
