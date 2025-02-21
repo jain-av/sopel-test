@@ -36,7 +36,7 @@ extensions = [
 ]
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
-    'sqlalchemy': ('https://docs.sqlalchemy.org/en/13/', None),
+    'sqlalchemy': ('https://docs.sqlalchemy.org/en/20/', None),
 }
 
 # Make Sphinx warn for references (methods, functions, etc.) it can't find
