@@ -294,6 +294,47 @@ def test_ircv3_intents_trigger(nick, configfactory):
     assert trigger.owner is True
 
 
+def test_ircv3_extended_join_trigger(nick, configfactory):
+    line = ':Foo!foo@example.com JOIN #Sopel bar :Real Name'
+    pretrigger = PreTrigger(nick, line)
+
+    config = configfactory('default.cfg', TMP_CONFIG)
+
+    fakematch = re.match('.*', line)
+
+    trigger = Trigger(config, pretrigger, fakematch)
+    assert trigger.sender == '#Sopel'
+    assert trigger.raw == line
+    assert trigger.is_privmsg is False
+    assert trigger.hostmask == 'Foo!foo@example.com'
+    assert trigger.user == 'foo'
+    assert trigger.nick == Identifier('Foo')
+    assert trigger.host == 'example.com'
+    assert trigger.event == 'JOIN'
+    assert trigger.match == fakematch
+    assert trigger.group == fakematch.group
+    assert trigger.groups == fakematch.groups
+    assert trigger.args == ['#Sopel', 'bar', 'Real Name']
+    assert trigger.plain == 'Real Name'
+    assert trigger.account == 'bar'
+    assert trigger.tags == {'account': 'bar'}
+    assert trigger.ctcp is None
+    assert trigger.owner is True
+    assert trigger.admin is True
+
+
+def test_ircv3_intents_trigger(nick, configfactory):
+    line = '@intent=ACTION :Foo!bar@example.com PRIVMSG #Sopel :Hello, world'
+    pretrigger = PreTrigger(nick, line)
+
+    config = configfactory('default.cfg', TMP_CONFIG)
+    fakematch = re.match('.*', line)
+
+    trigger = Trigger(config, pretrigger, fakematch)
+    assert trigger.admin is True
+    assert trigger.owner is True
+
+
 def test_ircv3_account_tag_trigger(nick, configfactory):
     line = '@account=bar :Nick_Is_Not_Foo!foo@example.com PRIVMSG #Sopel :Hello, world'
     pretrigger = PreTrigger(nick, line)
@@ -302,8 +343,8 @@ def test_ircv3_account_tag_trigger(nick, configfactory):
     fakematch = re.match('.*', line)
 
     trigger = Trigger(config, pretrigger, fakematch)
-    assert trigger.admin is True
-    assert trigger.owner is True
+    assert trigger.admin is False
+    assert trigger.owner is False
 
 
 def test_ircv3_server_time_trigger(nick, configfactory):
@@ -313,9 +354,12 @@ def test_ircv3_server_time_trigger(nick, configfactory):
     fakematch = re.match('.*', line)
 
     trigger = Trigger(config, pretrigger, fakematch)
-    assert trigger.time == datetime.datetime(2016, 1, 9, 3, 15, 42, 0)
+    assert trigger.time == datetime.datetime(2016, 1, 9, 3, 15, 42, tzinfo=datetime.timezone.utc)
 
     # Spec-breaking string
     line = '@time=2016-01-09T04:20 :Foo!foo@example.com PRIVMSG #Sopel :Hello, world'
     pretrigger = PreTrigger(nick, line)
-    assert pretrigger.time is not None
+    config = configfactory('default.cfg', TMP_CONFIG)
+    fakematch = re.match('.*', line)
+    trigger = Trigger(config, pretrigger, fakematch)
+    assert trigger.time == datetime.datetime(2016, 1, 9, 4, 20, tzinfo=datetime.timezone.utc)

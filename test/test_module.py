@@ -81,21 +81,21 @@ def test_unblockable():
     @module.unblockable
     def mock(bot, trigger, match):
         return True
-    assert mock.unblockable is True
+    assert getattr(mock, 'unblockable', False) is True
 
 
 def test_interval():
     @module.interval(5)
     def mock(bot, trigger, match):
         return True
-    assert mock.interval == [5]
+    assert getattr(mock, 'interval', None) == [5]
 
 
 def test_interval_args():
     @module.interval(5, 10)
     def mock(bot, trigger, match):
         return True
-    assert mock.interval == [5, 10]
+    assert getattr(mock, 'interval', None) == [5, 10]
 
 
 def test_interval_multiple():
@@ -104,21 +104,21 @@ def test_interval_multiple():
     @module.interval(20)
     def mock(bot, trigger, match):
         return True
-    assert mock.interval == [20, 5, 10]
+    assert getattr(mock, 'interval', None) == [20, 5, 10]
 
 
 def test_rule():
     @module.rule('.*')
     def mock(bot, trigger, match):
         return True
-    assert mock.rule == ['.*']
+    assert getattr(mock, 'rule', None) == ['.*']
 
 
 def test_rule_args():
     @module.rule('.*', r'\d+')
     def mock(bot, trigger, match):
         return True
-    assert mock.rule == ['.*', r'\d+']
+    assert getattr(mock, 'rule', None) == ['.*', r'\d+']
 
 
 def test_rule_multiple():
@@ -127,44 +127,47 @@ def test_rule_multiple():
     @module.rule(r'\w+')
     def mock(bot, trigger, match):
         return True
-    assert mock.rule == [r'\w+', '.*', r'\d+']
+    assert getattr(mock, 'rule', None) == [r'\w+', '.*', r'\d+']
 
 
 def test_thread():
     @module.thread(True)
     def mock(bot, trigger, match):
         return True
-    assert mock.thread is True
+    assert getattr(mock, 'thread', False) is True
 
 
 def test_url():
+    import re
     @module.url('pattern')
     def mock(bot, trigger, match):
         return True
-    patterns = [regex.pattern for regex in mock.url_regex]
+    patterns = [regex.pattern for regex in getattr(mock, 'url_regex', [])]
     assert len(patterns) == 1
     assert 'pattern' in patterns
 
 
 def test_url_args():
+    import re
     @module.url('first', 'second')
     def mock(bot, trigger, match):
         return True
 
-    patterns = [regex.pattern for regex in mock.url_regex]
+    patterns = [regex.pattern for regex in getattr(mock, 'url_regex', [])]
     assert len(patterns) == 2
     assert 'first' in patterns
     assert 'second' in patterns
 
 
 def test_url_multiple():
+    import re
     @module.url('first', 'second')
     @module.url('second')
     @module.url('third')
     def mock(bot, trigger, match):
         return True
 
-    patterns = [regex.pattern for regex in mock.url_regex]
+    patterns = [regex.pattern for regex in getattr(mock, 'url_regex', [])]
     assert len(patterns) == 3
     assert 'first' in patterns
     assert 'second' in patterns
@@ -176,13 +179,13 @@ def test_echo():
     @module.echo()
     def mock(bot, trigger, match):
         return True
-    assert mock.echo is True
+    assert getattr(mock, 'echo', False) is True
 
     # test decorator without parentheses
     @module.echo
     def mock(bot, trigger, match):
         return True
-    assert mock.echo is True
+    assert getattr(mock, 'echo', False) is True
 
     # test without decorator
     def mock(bot, trigger, match):
@@ -196,7 +199,7 @@ def test_commands():
     @module.commands('sopel')
     def mock(bot, trigger, match):
         return True
-    assert mock.commands == ['sopel']
+    assert getattr(mock, 'commands', None) == ['sopel']
     assert not hasattr(mock, 'rule')
 
 
@@ -204,7 +207,7 @@ def test_commands_args():
     @module.commands('sopel', 'bot')
     def mock(bot, trigger, match):
         return True
-    assert mock.commands == ['sopel', 'bot']
+    assert getattr(mock, 'commands', None) == ['sopel', 'bot']
     assert not hasattr(mock, 'rule')
 
 
@@ -214,7 +217,7 @@ def test_commands_multiple():
     @module.commands('robot')
     def mock(bot, trigger, match):
         return True
-    assert mock.commands == ['robot', 'bot', 'sopel']
+    assert getattr(mock, 'commands', None) == ['robot', 'bot', 'sopel']
     assert not hasattr(mock, 'rule')
 
 
@@ -222,7 +225,7 @@ def test_nickname_commands():
     @module.nickname_commands('sopel')
     def mock(bot, trigger, match):
         return True
-    assert mock.nickname_commands == ['sopel']
+    assert getattr(mock, 'nickname_commands', None) == ['sopel']
     assert not hasattr(mock, 'rule')
 
 
@@ -230,7 +233,7 @@ def test_nickname_commands_args():
     @module.nickname_commands('sopel', 'bot')
     def mock(bot, trigger, match):
         return True
-    assert mock.nickname_commands == ['sopel', 'bot']
+    assert getattr(mock, 'nickname_commands', None) == ['sopel', 'bot']
     assert not hasattr(mock, 'rule')
 
 
@@ -240,7 +243,7 @@ def test_nickname_commands_multiple():
     @module.nickname_commands('robot')
     def mock(bot, trigger, match):
         return True
-    assert mock.nickname_commands == ['robot', 'bot', 'sopel']
+    assert getattr(mock, 'nickname_commands', None) == ['robot', 'bot', 'sopel']
     assert not hasattr(mock, 'rule')
 
 
@@ -248,7 +251,7 @@ def test_action_commands():
     @module.action_commands('sopel')
     def mock(bot, trigger, match):
         return True
-    assert mock.action_commands == ['sopel']
+    assert getattr(mock, 'action_commands', None) == ['sopel']
     assert not hasattr(mock, 'intents')
     assert not hasattr(mock, 'rule')
 
@@ -257,7 +260,7 @@ def test_action_commands_args():
     @module.action_commands('sopel', 'bot')
     def mock(bot, trigger, match):
         return True
-    assert mock.action_commands == ['sopel', 'bot']
+    assert getattr(mock, 'action_commands', None) == ['sopel', 'bot']
     assert not hasattr(mock, 'intents')
     assert not hasattr(mock, 'rule')
 
@@ -268,7 +271,7 @@ def test_action_commands_multiple():
     @module.action_commands('robot')
     def mock(bot, trigger, match):
         return True
-    assert mock.action_commands == ['robot', 'bot', 'sopel']
+    assert getattr(mock, 'action_commands', None) == ['robot', 'bot', 'sopel']
     assert not hasattr(mock, 'intents')
     assert not hasattr(mock, 'rule')
 
@@ -280,9 +283,9 @@ def test_all_commands():
     def mock(bot, trigger, match):
         return True
 
-    assert mock.commands == ['sopel']
-    assert mock.action_commands == ['me_sopel']
-    assert mock.nickname_commands == ['name_sopel']
+    assert getattr(mock, 'commands', None) == ['sopel']
+    assert getattr(mock, 'action_commands', None) == ['me_sopel']
+    assert getattr(mock, 'nickname_commands', None) == ['name_sopel']
     assert not hasattr(mock, 'intents')
     assert not hasattr(mock, 'rule')
 
@@ -291,21 +294,21 @@ def test_priority():
     @module.priority('high')
     def mock(bot, trigger, match):
         return True
-    assert mock.priority == 'high'
+    assert getattr(mock, 'priority', None) == 'high'
 
 
 def test_event():
     @module.event('301')
     def mock(bot, trigger, match):
         return True
-    assert mock.event == ['301']
+    assert getattr(mock, 'event', None) == ['301']
 
 
 def test_event_args():
     @module.event('301', '302')
     def mock(bot, trigger, match):
         return True
-    assert mock.event == ['301', '302']
+    assert getattr(mock, 'event', None) == ['301', '302']
 
 
 def test_event_multiple():
@@ -314,21 +317,21 @@ def test_event_multiple():
     @module.event('466')
     def mock(bot, trigger, match):
         return True
-    assert mock.event == ['466', '301', '302']
+    assert getattr(mock, 'event', None) == ['466', '301', '302']
 
 
 def test_intent():
     @module.intent('ACTION')
     def mock(bot, trigger, match):
         return True
-    assert mock.intents == ['ACTION']
+    assert getattr(mock, 'intents', None) == ['ACTION']
 
 
 def test_intent_args():
     @module.intent('ACTION', 'OTHER')
     def mock(bot, trigger, match):
         return True
-    assert mock.intents == ['ACTION', 'OTHER']
+    assert getattr(mock, 'intents', None) == ['ACTION', 'OTHER']
 
 
 def test_intent_multiple():
@@ -337,14 +340,14 @@ def test_intent_multiple():
     @module.intent('PING',)
     def mock(bot, trigger, match):
         return True
-    assert mock.intents == ['PING', 'OTHER', 'ACTION']
+    assert getattr(mock, 'intents', None) == ['PING', 'OTHER', 'ACTION']
 
 
 def test_rate():
     @module.rate(5)
     def mock(bot, trigger, match):
         return True
-    assert mock.rate == 5
+    assert getattr(mock, 'rate', None) == 5
 
 
 def test_require_privmsg(bot, trigger, trigger_pm):

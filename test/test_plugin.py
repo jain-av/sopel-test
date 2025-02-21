@@ -3,7 +3,6 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 from sopel import plugin
-from sopel.tests import rawlist
 
 
 TMP_CONFIG = """
@@ -304,7 +303,7 @@ def test_require_bot_privilege(configfactory,
         return True
 
     assert mock(bot, bot._trigger) is not True
-    assert not bot.backend.message_sent
+    assert not bot.sent
 
     @plugin.command('ban')
     @plugin.require_bot_privilege(plugin.OWNER, message='Nope')
@@ -312,7 +311,7 @@ def test_require_bot_privilege(configfactory,
         return True
 
     assert mock(bot, bot._trigger) is not True
-    assert bot.backend.message_sent == rawlist('PRIVMSG #chan :Nope')
+    assert bot.sent == [('PRIVMSG', '#chan', 'Nope')]
 
     @plugin.command('ban')
     @plugin.require_bot_privilege(plugin.OWNER, message='Nope', reply=True)
@@ -320,7 +319,7 @@ def test_require_bot_privilege(configfactory,
         return True
 
     assert mock(bot, bot._trigger) is not True
-    assert bot.backend.message_sent[1:] == rawlist('PRIVMSG #chan :Foo: Nope')
+    assert bot.sent[1:] == [('PRIVMSG', '#chan', 'Foo: Nope')]
 
 
 def test_require_bot_privilege_private_message(configfactory,
