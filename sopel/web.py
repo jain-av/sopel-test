@@ -16,7 +16,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import sys
 
-import requests
+# No direct sqlalchemy imports in this module
 
 from .tools import deprecated
 
@@ -36,6 +36,10 @@ from .tools.web import (  # noqa
     urlencode_non_ascii,
     iri_to_uri,
     urlencode,
+    get as get_new,  # Alias the new get function
+    head as head_new,  # Alias the new head function
+    post as post_new,  # Alias the new post function
+    get_urllib_object as get_urllib_object_new,  # Alias the new get_urllib_object
 )
 
 __all__ = [
@@ -80,25 +84,7 @@ def get(uri, timeout=20, headers=None, return_headers=False,
     `limit_bytes` is ignored.
 
     """
-    if not uri.startswith('http'):
-        uri = "http://" + uri
-    if headers is None:
-        headers = default_headers
-    else:
-        tmp = default_headers.copy()
-        tmp.update(headers)
-        headers = tmp
-    u = requests.get(uri, timeout=timeout, headers=headers, verify=verify_ssl)
-    bytes = u.content
-    u.close()
-    headers = u.headers
-    if not dont_decode:
-        bytes = u.text
-    if not return_headers:
-        return bytes
-    else:
-        headers['_http_status'] = u.status_code
-        return (bytes, headers)
+    return get_new(uri, timeout, headers, return_headers, limit_bytes, verify_ssl, dont_decode)
 
 
 # Get HTTP headers
@@ -111,18 +97,7 @@ def head(uri, timeout=20, headers=None, verify_ssl=True):  # pragma: no cover
     to higher values if you are communicating with a slow web application.
 
     """
-    if not uri.startswith('http'):
-        uri = "http://" + uri
-    if headers is None:
-        headers = default_headers
-    else:
-        tmp = default_headers.copy()
-        tmp.update(headers)
-        headers = tmp
-    u = requests.get(uri, timeout=timeout, headers=headers, verify=verify_ssl)
-    info = u.headers
-    u.close()
-    return info
+    return head_new(uri, timeout, headers, verify_ssl)
 
 
 # HTTP POST
@@ -137,17 +112,7 @@ def post(uri, query, limit_bytes=None, timeout=20, verify_ssl=True, return_heade
     `limit_bytes` is ignored.
 
     """
-    if not uri.startswith('http'):
-        uri = "http://" + uri
-    u = requests.post(uri, timeout=timeout, verify=verify_ssl, data=query)
-    bytes = u.raw.read(limit_bytes)
-    headers = u.headers
-    u.close()
-    if not return_headers:
-        return bytes
-    else:
-        headers['_http_status'] = u.status_code
-        return (bytes, headers)
+    return post_new(uri, query, limit_bytes, timeout, verify_ssl, return_headers)
 
 
 # solely for use by get_urllib_object()
@@ -173,17 +138,4 @@ def get_urllib_object(uri, timeout, headers=None, verify_ssl=True, data=None):  
     """Return an HTTPResponse object for `uri` and `timeout` and `headers`. Deprecated
 
     """
-
-    if headers is None:
-        headers = default_headers
-    else:
-        tmp = default_headers.copy()
-        tmp.update(headers)
-        headers = tmp
-    if data is not None:
-        response = requests.post(uri, timeout=timeout, verify=verify_ssl,
-                                 data=data, headers=headers)
-    else:
-        response = requests.get(uri, timeout=timeout, verify=verify_ssl,
-                                headers=headers)
-    return MockHttpResponse(response)
+    return get_urllib_object_new(uri, timeout, headers, verify_ssl, data)

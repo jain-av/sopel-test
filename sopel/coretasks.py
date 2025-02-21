@@ -331,6 +331,569 @@ def startup(bot, trigger):
     _execute_perform(bot)
 
 
+@plugin.event(events.RPL_ISUPPORT)
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.rule('are supported by this server')
+@plugin.priority('medium')
+def handle_isupport(bot, trigger):
+    """Handle ``RPL_ISUPPORT`` events."""
+    # remember if NAMESX is known to be supported, before parsing RPL_ISUPPORT
+    namesx_support = 'NAMESX' in bot.isupport
+
+    # parse ISUPPORT message from server
+    parameters = {}
+    for arg in trigger.args:
+        try:
+            key, value = isupport.parse_parameter(arg)
+            parameters[key] = value
+        except ValueError:
+            # ignore malformed parameter: log a warning and continue
+            LOGGER.warning("Unable to parse ISUPPORT parameter: %r", arg)
+
+    bot._isupport = bot._isupport.apply(**parameters)
+
+    # was NAMESX support status updated?
+    if not namesx_support and 'NAMESX' in bot.isupport:
+        # yes it was!
+        if 'multi-prefix' not in bot.server_capabilities:
+            # and the server doesn't have the multi-prefix capability
+            # so we can ask the server to use the NAMESX feature
+            bot.write(('PROTOCTL', 'NAMESX'))
+
+
+@plugin.event(events.RPL_MYINFO)
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.priority('medium')
+def parse_reply_myinfo(bot, trigger):
+    """Handle ``RPL_MYINFO`` events."""
+    # keep <client> <servername> <version> only
+    # the trailing parameters (mode types) should be read from ISUPPORT
+    bot._myinfo = MyInfo(*trigger.args[0:3])
+
+    LOGGER.info(
+        "Received RPL_MYINFO from server: %s, %s, %s",
+        bot._myinfo.client,
+        bot._myinfo.servername,
+        bot._myinfo.version,
+    )
+
+
+@module.require_privmsg()
+@module.require_owner()
+@module.commands('useserviceauth')
+def enable_service_auth(bot, trigger):
+    """Set owner's account from an authenticated owner.
+
+    This command can be used to automatically configure ``core.owner_account``
+    when the owner is known and has a registered account, but the bot doesn't
+    have ``core.owner_account`` configured.
+
+    This doesn't work if the ``account-tag`` capability is not available.
+    """
+    if bot.config.core.owner_account:
+        return
+    if 'account-tag' not in bot.enabled_capabilities:
+        bot.say('This server does not fully support services auth, so this '
+                'command is not available.')
+        return
+    if not trigger.account:
+        bot.say('You must be logged in to network services before using this '
+                'command.')
+        return
+    bot.config.core.owner_account = trigger.account
+    bot.config.save()
+    bot.say('Success! I will now use network services to identify you as my '
+            'owner.')
+    LOGGER.info(
+        "User %s set %s as owner account.",
+        trigger.nick,
+        trigger.account,
+    )
+
+
+@plugin.event(events.ERR_NOCHANMODES)
+@plugin.priority('medium')
+def retry_join(bot, trigger):
+    """Give NickServ enough time to identify on a +R channel.
+
+    Give NickServ enough time to identify, and retry rejoining an
+    identified-only (+R) channel. Maximum of ten rejoin attempts.
+    """
+    channel = trigger.args[1]
+    if channel in bot.memory['retry_join'].keys():
+        bot.memory['retry_join'][channel] += 1
+        if bot.memory['retry_join'][channel] > 10:
+            LOGGER.warning("Failed to join %s after 10 attempts.", channel)
+            return
+        LOGGER.info(
+            "Rejoining channel %r failed, will retry in 6s.",
+            str(channel))
+        time.sleep(6)
+    else:
+        bot.memory['retry_join'][channel] = 0
+
+    attempt = bot.memory['retry_join'][channel] + 1
+    LOGGER.info(
+        "Trying to rejoin channel %r (attempt %d/10)",
+        str(channel), attempt)
+    bot.join(channel)
+
+
+@plugin.rule('(.*)')
+@plugin.event(events.RPL_NAMREPLY)
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.priority('medium')
+def handle_names(bot, trigger):
+    """Handle NAMES responses.
+
+    This function keeps track of users' privileges when Sopel joins channels.
+    """
+    names = trigger.split()
+
+    # TODO specific to one channel type. See issue 281.
+    channels = re.search(r'(#\S*)', trigger.raw)
+    if not channels:
+        return
+    channel = Identifier(channels.group(1))
+    if channel not in bot.privileges:
+        bot.privileges[channel] = {}
+    if channel not in bot.channels:
+        bot.channels[channel] = target.Channel(channel)
+
+    # This could probably be made flexible in the future, but I don't think
+    # it'd be worth it.
+    # If this ever needs to be updated, remember to change the mode handling in
+    # the WHO-handler functions below, too.
+    mapping = {
+        "+": module.VOICE,
+        "%": module.HALFOP,
+        "@": module.OP,
+        "&": module.ADMIN,
+        "~": module.OWNER,
+        "!": module.OPER,
+    }
+
+    for name in names:
+        priv = 0
+        for prefix, value in iteritems(mapping):
+            if prefix in name:
+                priv = priv | value
+        nick = Identifier(name.lstrip(''.join(mapping.keys())))
+        bot.privileges[channel][nick] = priv
+        user = bot.users.get(nick)
+        if user is None:
+            # It's not possible to set the username/hostname from info received
+            # in a NAMES reply, unfortunately.
+            # Fortunately, the user should already exist in bot.users by the
+            # time this code runs, so this is 99.9% ass-covering.
+            user = target.User(nick, None, None)
+            bot.users[nick] = user
+        bot.channels[channel].add_user(user, privs=priv)
+
+
+@plugin.rule('(.*)')
+@plugin.event('MODE')
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.priority('medium')
+def track_modes(bot, trigger):
+    """Track changes from received MODE commands."""
+    _parse_modes(bot, trigger.args)
+
+
+@plugin.priority('high')
+@plugin.event(events.RPL_CHANNELMODEIS)
+@plugin.thread(False)
+@plugin.unblockable
+def initial_modes(bot, trigger):
+    """Populate channel modes from response to MODE request sent after JOIN."""
+    _parse_modes(bot, trigger.args[1:], clear=True)
+
+
+def _parse_modes(bot, args, clear=False):
+    """Parse MODE message and apply changes to internal state."""
+    channel_name = Identifier(args[0])
+    if channel_name.is_nick():
+        # We don't do anything with user modes
+        LOGGER.debug("Ignoring user modes: %r", args)
+        return
+
+    channel = bot.channels[channel_name]
+
+    # Unreal 3 sometimes sends an extraneous trailing space. If we're short an
+    # arg, we'll find out later.
+    if args[-1] == "":
+        args.pop()
+    # If any args are still empty, that's something we may not be prepared for,
+    # but let's continue anyway hoping they're trailing / not important.
+    if len(args) < 2 or not all(args):
+        LOGGER.debug(
+            "The server sent a possibly malformed MODE message: %r", args)
+
+    modestring = args[1]
+    params = args[2:]
+
+    mapping = {
+        "v": module.VOICE,
+        "h": module.HALFOP,
+        "o": module.OP,
+        "a": module.ADMIN,
+        "q": module.OWNER,
+        "y": module.OPER,
+        "Y": module.OPER,
+    }
+
+    modes = {}
+    if not clear:
+        # Work on a copy for some thread safety
+        modes.update(channel.modes)
+
+    # Process modes
+    sign = ""
+    param_idx = 0
+    chanmodes = bot.isupport.CHANMODES
+    for char in modestring:
+        # Are we setting or unsetting
+        if char in "+-":
+            sign = char
+            continue
+
+# coding=utf-8
+"""Core Sopel plugin that handles IRC protocol functions.
+
+This plugin allows the bot to run without user-facing functionality:
+
+* it handles client capability negotiation
+* it handles client auth (both nick auth and server auth)
+* it handles connection registration (RPL_WELCOME, RPL_LUSERCLIENT), dealing
+  with error cases such as nick already in use
+* it tracks known channels & users (join, quit, nick change and other events)
+* it manages blocked (ignored) users
+
+This is written as a plugin to make it easier to extend to support more
+responses to standard IRC codes without having to shove them all into the
+dispatch function in :class:`sopel.bot.Sopel` and making it easier to maintain.
+"""
+# Copyright 2008-2011, Sean B. Palmer (inamidst.com) and Michael Yanovich
+# (yanovich.net)
+# Copyright © 2012, Elad Alfassa <elad@fedoraproject.org>
+# Copyright 2012-2015, Elsie Powell embolalia.com
+# Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
+#
+# Licensed under the Eiffel Forum License 2.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import base64
+import collections
+import datetime
+import functools
+import logging
+import re
+import sys
+import time
+
+from sopel import loader, module, plugin
+from sopel.config import ConfigurationError
+from sopel.irc import isupport
+from sopel.irc.utils import CapReq, MyInfo
+from sopel.tools import events, Identifier, iteritems, SopelMemory, target, web
+
+
+if sys.version_info.major >= 3:
+    unicode = str
+
+LOGGER = logging.getLogger(__name__)
+
+CORE_QUERYTYPE = '999'
+"""WHOX querytype to indicate requests/responses from coretasks.
+
+Other plugins should use a different querytype.
+"""
+
+batched_caps = {}
+
+
+def setup(bot):
+    """Set up the coretasks plugin.
+
+    The setup phase is used to activate the throttle feature to prevent a flood
+    of JOIN commands when there are too many channels to join.
+    """
+    bot.memory['join_events_queue'] = collections.deque()
+
+    # Manage JOIN flood protection
+    if bot.settings.core.throttle_join:
+        wait_interval = max(bot.settings.core.throttle_wait, 1)
+
+        @module.interval(wait_interval)
+        @plugin.label('throttle_join')
+        def processing_job(bot):
+            _join_event_processing(bot)
+
+        loader.clean_callable(processing_job, bot.settings)
+        processing_job.plugin_name = 'coretasks'
+
+        bot.register_jobs([processing_job])
+
+
+def shutdown(bot):
+    """Clean up coretasks-related values in the bot's memory."""
+    try:
+        bot.memory['join_events_queue'].clear()
+    except KeyError:
+        pass
+
+
+def _join_event_processing(bot):
+    """Process a batch of JOIN event from the ``join_events_queue`` queue.
+
+    Every time this function is executed, it processes at most
+    ``throttle_join`` JOIN events. For each JOIN, it sends a WHO request to
+    know more about the channel. This will prevent an excess of flood when
+    there are too many channels to join at once.
+    """
+    batch_size = max(bot.settings.core.throttle_join, 1)
+    for _ in range(batch_size):
+        try:
+            channel = bot.memory['join_events_queue'].popleft()
+        except IndexError:
+            break
+        LOGGER.debug("Sending MODE and WHO after channel JOIN: %s", channel)
+        bot.write(["MODE", channel])
+        _send_who(bot, channel)
+
+
+def auth_after_register(bot):
+    """Do NickServ/AuthServ auth.
+
+    :param bot: a connected Sopel instance
+    :type bot: :class:`sopel.bot.Sopel`
+
+    This function can be used, **after** the bot is connected, to handle one of
+    these auth methods:
+
+    * ``nickserv``: send a private message to the NickServ service
+    * ``authserv``: send an ``AUTHSERV`` command
+    * ``Q``: send an ``AUTH`` command
+    * ``userserv``: send a private message to the UserServ service
+
+    .. important::
+
+        If ``core.auth_method`` is set, then ``core.nick_auth_method`` will be
+        ignored. If none is set, then this function does nothing.
+
+    """
+    if bot.config.core.auth_method:
+        auth_method = bot.config.core.auth_method
+        auth_username = bot.config.core.auth_username
+        auth_password = bot.config.core.auth_password
+        auth_target = bot.config.core.auth_target
+    elif bot.config.core.nick_auth_method:
+        auth_method = bot.config.core.nick_auth_method
+        auth_username = (bot.config.core.nick_auth_username or
+                         bot.config.core.nick)
+        auth_password = bot.config.core.nick_auth_password
+        auth_target = bot.config.core.nick_auth_target
+    else:
+        return
+
+    # nickserv-based auth method needs to check for current nick
+    if auth_method == 'nickserv':
+        if bot.nick != bot.settings.core.nick:
+            LOGGER.warning("Sending nickserv GHOST command.")
+            bot.say(
+                'GHOST %s %s' % (bot.settings.core.nick, auth_password),
+                auth_target or 'NickServ')
+        else:
+            bot.say('IDENTIFY %s' % auth_password, auth_target or 'NickServ')
+
+    # other methods use account instead of nick
+    elif auth_method == 'authserv':
+        bot.write(('AUTHSERV', 'auth', auth_username, auth_password))
+    elif auth_method == 'Q':
+        bot.write(('AUTH', auth_username, auth_password))
+    elif auth_method == 'userserv':
+        bot.say("LOGIN %s %s" % (auth_username, auth_password),
+                auth_target or 'UserServ')
+
+
+def _execute_perform(bot):
+    """Execute commands specified to perform on IRC server connect.
+
+    This function executes the list of commands that can be found in the
+    ``core.commands_on_connect`` setting. It automatically replaces any
+    ``$nickname`` placeholder in the command with the bot's configured nick.
+    """
+    if not bot.connection_registered:
+        # How did you even get this command, bot?
+        raise Exception('Bot must be connected to server to perform commands.')
+
+    commands = bot.config.core.commands_on_connect
+    count = len(commands)
+
+    if not count:
+        LOGGER.info("No custom command to execute.")
+        return
+
+    LOGGER.info("Executing %d custom commands.", count)
+    for i, command in enumerate(commands, 1):
+        command = command.replace('$nickname', bot.config.core.nick)
+        LOGGER.debug("Executing custom command [%d/%d]: %s", i, count, command)
+        bot.write((command,))
+
+
+@plugin.event(events.ERR_NICKNAMEINUSE)
+@plugin.thread(False)
+@plugin.unblockable
+@plugin.priority('medium')
+def on_nickname_in_use(bot, trigger):
+    """Change the bot's nick when the current one is already in use.
+
+    This can be triggered when the bot disconnects then reconnects before the
+    server can notice a client timeout. Other reasons include mischief,
+    trolling, and obviously, PEBKAC.
+
+    This will change the current nick by adding a trailing ``_``. If the bot
+    sees that a user with its configured nick disconnects (see ``QUIT`` event
+    handling), the bot will try to regain it.
+    """
+    LOGGER.error(
+        "Nickname already in use! (Nick: %s; Sender: %s; Args: %r)",
+        trigger.nick,
+        trigger.sender,
+        trigger.args,
+    )
+    bot.change_current_nick(bot.nick + '_')
+
+
+@module.require_privmsg("This command only works as a private message.")
+@module.require_admin("This command requires admin privileges.")
+@module.commands('execute')
+def execute_perform(bot, trigger):
+    """Execute commands specified to perform on IRC server connect.
+
+    This allows a bot owner or admin to force the execution of commands
+    that are automatically performed when the bot connects.
+    """
+    _execute_perform(bot)
+
+
+@module.event(events.RPL_WELCOME, events.RPL_LUSERCLIENT)
+@module.thread(False)
+@module.unblockable
+@plugin.priority('medium')
+def startup(bot, trigger):
+    """Do tasks related to connecting to the network.
+
+    ``001 RPL_WELCOME`` is from RFC2812 and is the first message that is sent
+    after the connection has been registered on the network.
+
+    ``251 RPL_LUSERCLIENT`` is a mandatory message that is sent after the
+    client connects to the server in RFC1459. RFC2812 does not require it and
+    all networks might not send it. We support both.
+
+    If ``sopel.irc.AbstractBot.connection_registered`` is set, this function
+    does nothing and returns immediately. Otherwise, the flag is set and the
+    function proceeds normally to:
+
+    1. trigger auth method
+    2. set bot's ``MODE`` (from ``core.modes``)
+    3. join channels (or queue them to join later)
+    4. check for security when the ``account-tag`` capability is enabled
+    5. execute custom commands
+    """
+    if bot.connection_registered:
+        return
+
+    # nick shenanigans are serious business, but fortunately RPL_WELCOME
+    # includes the actual nick used by the server after truncation, removal
+    # of invalid characters, etc. so we can check for such shenanigans
+    if trigger.event == events.RPL_WELCOME:
+        if bot.nick != trigger.args[0]:
+            # setting modes below is just one of the things that won't work
+            # as expected if the conditions for running this block are met
+            privmsg = (
+                "Hi, I'm your bot, %s. The IRC server didn't assign me the "
+                "nick you configured. This can cause problems for me, and "
+                "make me do weird things. You'll probably want to stop me, "
+                "figure out why my nick isn't acceptable, and fix that before "
+                "starting me again." % bot.nick
+            )
+            debug_msg = (
+                "RPL_WELCOME indicated the server did not accept the bot's "
+                "configured nickname. Requested '%s'; got '%s'. This can "
+                "cause unexpected behavior. Please modify the configuration "
+                "and restart the bot." % (bot.nick, trigger.args[0])
+            )
+            LOGGER.critical(debug_msg)
+            bot.say(privmsg, bot.config.core.owner)
+
+    # set flag
+    bot.connection_registered = True
+
+    # handle auth method
+    auth_after_register(bot)
+
+    # set bot's MODE
+    modes = bot.config.core.modes
+    if modes:
+        if not modes.startswith(('+', '-')):
+            # Assume "+" by default.
+            modes = '+' + modes
+        bot.write(('MODE', bot.nick, modes))
+
+    # join channels
+    bot.memory['retry_join'] = SopelMemory()
+
+    channels = bot.config.core.channels
+    if not channels:
+        LOGGER.info("No initial channels to JOIN.")
+    elif bot.config.core.throttle_join:
+        throttle_rate = int(bot.config.core.throttle_join)
+        throttle_wait = max(bot.config.core.throttle_wait, 1)
+        channels_joined = 0
+
+        LOGGER.info(
+            "Joining %d channels (with JOIN throttle ON); "
+            "this may take a moment.",
+            len(channels))
+
+        for channel in channels:
+            channels_joined += 1
+            if not channels_joined % throttle_rate:
+                LOGGER.debug(
+                    "Waiting %ds before next JOIN batch.",
+                    throttle_wait)
+                time.sleep(throttle_wait)
+            bot.join(channel)
+    else:
+        LOGGER.info(
+            "Joining %d channels (with JOIN throttle OFF); "
+            "this may take a moment.",
+            len(channels))
+
+        for channel in bot.config.core.channels:
+            bot.join(channel)
+
+    # warn for insecure auth method if necessary
+    if (not bot.config.core.owner_account and
+            'account-tag' in bot.enabled_capabilities and
+            '@' not in bot.config.core.owner):
+        msg = (
+            "This network supports using network services to identify you as "
+            "my owner, rather than just matching your nickname. This is much "
+            "more secure. If you'd like to do this, make sure you're logged in "
+            "and reply with \"{}useserviceauth\""
+        ).format(bot.config.core.help_prefix)
+        bot.say(msg, bot.config.core.owner)
+
+    # execute custom commands
+    _execute_perform(bot)
+
+
 @module.event(events.RPL_ISUPPORT)
 @module.thread(False)
 @module.unblockable
@@ -828,7 +1391,6 @@ def track_join(bot, trigger):
             'extended-join' in bot.enabled_capabilities):
         user.account = trigger.args[1]
 
-
 @module.event('QUIT')
 @module.thread(False)
 @module.unblockable
@@ -1091,7 +1653,6 @@ def auth_proceed(bot, trigger):
 def _make_sasl_plain_token(account, password):
     return '\x00'.join((account, account, password))
 
-
 @module.event(events.RPL_SASLSUCCESS)
 @plugin.thread(False)
 @module.unblockable
@@ -1114,7 +1675,7 @@ def sasl_success(bot, trigger):
 @plugin.event(events.ERR_SASLABORTED)
 @plugin.event(events.ERR_NICKLOCKED)
 @plugin.thread(False)
-@plugin.unblockable
+@module.unblockable
 @plugin.priority('medium')
 def sasl_fail(bot, trigger):
     """SASL Auth Failed: log the error and quit."""
@@ -1214,13 +1775,13 @@ def blocks(bot, trigger):
     if len(text) == 3 and text[1] == "list":
         if text[2] == "hostmask":
             if len(masks) > 0:
-                blocked = ', '.join(unicode(mask) for mask in masks)
+                blocked = ', '.join(str(mask) for mask in masks)
                 bot.say("Blocked hostmasks: {}".format(blocked))
             else:
                 bot.reply(STRINGS['nonelisted'] % ('hostmasks'))
         elif text[2] == "nick":
             if len(nicks) > 0:
-                blocked = ', '.join(unicode(nick) for nick in nicks)
+                blocked = ', '.join(str(nick) for nick in nicks)
                 bot.say("Blocked nicks: {}".format(blocked))
             else:
                 bot.reply(STRINGS['nonelisted'] % ('nicks'))
@@ -1247,7 +1808,7 @@ def blocks(bot, trigger):
                 bot.reply(STRINGS['no_nick'] % (text[3]))
                 return
             nicks.remove(Identifier(text[3]))
-            bot.config.core.nick_blocks = [unicode(n) for n in nicks]
+            bot.config.core.nick_blocks = [str(n) for n in nicks]
             bot.config.save()
             bot.reply(STRINGS['success_del'] % (text[3]))
         elif text[2] == "hostmask":
@@ -1256,7 +1817,7 @@ def blocks(bot, trigger):
                 bot.reply(STRINGS['no_host'] % (text[3]))
                 return
             masks.remove(mask)
-            bot.config.core.host_blocks = [unicode(m) for m in masks]
+            bot.config.core.host_blocks = [str(m) for m in masks]
             bot.config.save()
             bot.reply(STRINGS['success_del'] % (text[3]))
         else:
@@ -1268,7 +1829,7 @@ def blocks(bot, trigger):
 
 @module.event('ACCOUNT')
 @plugin.thread(False)
-@plugin.unblockable
+@module.unblockable
 @plugin.priority('medium')
 def account_notify(bot, trigger):
     """Track users' accounts."""
@@ -1367,7 +1928,6 @@ def track_notify(bot, trigger):
     state_change = 'went away' if user.away else 'came back'
     LOGGER.info("User %s: %s", state_change, trigger.nick)
 
-
 @module.event('TOPIC')
 @module.event(events.RPL_TOPIC)
 @module.thread(False)
@@ -1394,7 +1954,7 @@ def handle_url_callbacks(bot, trigger):
     """
     schemes = bot.config.core.auto_url_schemes
     # find URLs in the trigger
-    for url in web.search_urls(trigger, schemes=schemes):
+    for url in web.search_urls(trigger.group(), schemes=schemes):
         # find callbacks for said URL
         for function, match in bot.search_url_callbacks(url):
             # trigger callback defined by the `@url` decorator
@@ -1404,4 +1964,4 @@ def handle_url_callbacks(bot, trigger):
                 def decorated(bot, trigger):
                     return function(bot, trigger, match=match)
 
-                bot.call(decorated, bot, trigger)
+                bot.call(decorated, trigger)

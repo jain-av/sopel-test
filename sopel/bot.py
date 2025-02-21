@@ -302,6 +302,518 @@ class Sopel(irc.AbstractBot):
             handler.setFormatter(formatter)
 
             # set channel handler to `sopel` logger
+            logger_ = logging.getLogger('sopel')
+            logger_.addHandler(handler)
+
+    def setup_plugins(self):
+        """Load plugins into the bot."""
+        load_success = 0
+        load_error = 0
+        load_disabled = 0
+
+        LOGGER.info("Loading plugins...")
+        usable_plugins = plugins.get_usable_plugins(self.settings)
+        for name, info in usable_plugins.items():
+            plugin, is_enabled = info
+            if not is_enabled:
+                load_disabled = load_disabled + 1
+                continue
+
+            try:
+                plugin.load()
+            except Exception as e:
+                load_error = load_error + 1
+                LOGGER.exception("Error loading %s: %s", name, e)
+            except SystemExit:
+                load_error = load_error + 1
+                LOGGER.exception(
+                    "Error loading %s (plugin tried to exit)", name)
+            else:
+                try:
+                    if plugin.has_setup():
+                        plugin.setup(self)
+                        # TODO: remove in Sopel 8
+                        self.__setup_plugins_check_manual_url_callbacks(name)
+                    plugin.register(self)
+                except Exception as e:
+                    load_error = load_error + 1
+                    LOGGER.exception("Error in %s setup: %s", name, e)
+                else:
+                    load_success = load_success + 1
+                    LOGGER.info("Plugin loaded: %s", name)
+
+        total = sum([load_success, load_error, load_disabled])
+        if total and load_success:
+            LOGGER.info(
+                "Registered %d plugins, %d failed, %d disabled",
+                (load_success - 1),
+                load_error,
+                load_disabled)
+        else:
+            LOGGER.warning("Warning: Couldn't load any plugins")
+
+    def __setup_plugins_check_manual_url_callbacks(self, name):
+        # check if a plugin modified bot.memory['url_callbacks'] manually
+        # TODO: remove in Sopel 8
+        if 'url_callbacks' not in self.memory:
+            # nothing to check
+            return
+
+        for key, callback in tools.iteritems(self.memory['url_callbacks']):
+            is_checked = getattr(
+                callback, '_sopel_url_callbacks_checked', False)
+            if is_checked:
+                # already checked; move on to next callback
+                continue
+
+            # deprecation warning
+            LOGGER.warning(
+                "Plugin `%s` uses `bot.memory['url_callbacks']`; "
+                'this key is deprecated and will be removed in Sopel 8. '
+                'Use `@url` or `@url_lazy` instead. Callback was: %s',
+                name, callback.__name__)
+            # mark callback as checked
+            setattr(callback, '_sopel_url_callbacks_checked', True)
+
+    # post setup
+
+    def post_setup(self):
+        """Perform post-setup actions.
+
+        This method handles everything that should happen after all the plugins
+        are loaded, and before the bot can connect to the IRC server.
+
+        At the moment, this method checks for undefined configuration options,
+        and starts the job scheduler.
+
+        .. versionadded:: 7.1
+        """
+        settings = self.settings
+        for section_name, section in settings.get_defined_sections():
+            defined_options = {
+                settings.parser.optionxform(opt)
+                for opt, _ in inspect.getmembers(section)
+                if not opt.startswith('_')
+            }
+            for option_name in settings.parser.options(section_name):
+                if option_name not in defined_options:
+                    LOGGER.warning(
+                        "Config option `%s.%s` is not defined by its section "
+                        "and may not be recognized by Sopel.",
+                        section_name,
+                        option_name,
+                    )
+
+        self._scheduler.start()
+
+    # plugins management
+
+    def reload_plugin(self, name):
+        """Reload a plugin.
+
+        :param str name: name of the plugin to reload
+        :raise plugins.exceptions.PluginNotRegistered: when there is no
+            ``name`` plugin registered
+
+        This function runs the plugin's shutdown routine and unregisters the
+        plugin from the bot. Then this function reloads the plugin, runs its
+        setup routines, and registers it again.
+        """
+        if not self.has_plugin(name):
+            raise plugins.exceptions.PluginNotRegistered(name)
+
+        plugin = self._plugins[name]
+        # tear down
+        plugin.shutdown(self)
+        plugin.unregister(self)
+        LOGGER.info("Unloaded plugin %s", name)
+        # reload & setup
+        plugin.reload()
+        plugin.setup(self)
+        plugin.register(self)
+        meta = plugin.get_meta_description()
+        LOGGER.info("Reloaded %s plugin %s from %s",
+                    meta['type'], name, meta['source'])
+
+    def reload_plugins(self):
+        """Reload all registered plugins.
+
+        First, this function runs all plugin shutdown routines and unregisters
+        all plugins. Then it reloads all plugins, runs their setup routines, and
+        registers them again.
+        """
+        registered = list(self._plugins.items())
+        # tear down all plugins
+        for name, plugin in registered:
+            plugin.shutdown(self)
+            plugin.unregister(self)
+            LOGGER.info("Unloaded plugin %s", name)
+
+        # reload & setup all plugins
+        for name, plugin in registered:
+            plugin.reload()
+            plugin.setup(self)
+            plugin.register(self)
+            meta = plugin.get_meta_description()
+            LOGGER.info("Reloaded %s plugin %s from %s",
+                        meta['type'], name, meta['source'])
+
+    def add_plugin(self, plugin, callables, jobs, shutdowns, urls):
+        """Add a loaded plugin to the bot's registry.
+
+        :param plugin: loaded plugin to add
+        :type plugin: :class:`sopel.plugins.handlers.AbstractPluginHandler`
+        :param callables: an iterable of callables from the ``plugin``
+        :type callables: :term:`iterable`
+        :param jobs: an iterable of functions from the ``plugin`` that are
+                     periodically invoked
+        :type jobs: :term:`iterable`
+        :param shutdowns: an iterable of functions from the ``plugin`` that
+                          should be called on shutdown
+        :type shutdowns: :term:`iterable`
+        :param urls: an iterable of functions from the ``plugin`` to call when
+                     matched against a URL
+        :type urls: :term:`iterable`
+        """
+        self._plugins[plugin.name] = plugin
+        self.register_callables(callables)
+        self.register_jobs(jobs)
+        self.register_shutdowns(shutdowns)
+        self.register_urls(urls)
+
+    def remove_plugin(self, plugin, callables, jobs, shutdowns, urls):
+        """Remove a loaded plugin from the bot's registry.
+
+        :param plugin: loaded plugin to remove
+        :type plugin: :class:`sopel.plugins.handlers.AbstractPluginHandler`
+        :param callables: an iterable of callables from the ``plugin``
+        :type callables: :term:`iterable`
+        :param jobs: an iterable of functions from the ``plugin`` that are
+                     periodically invoked
+        :type jobs: :term:`iterable`
+        :param shutdowns: an iterable of functions from the ``plugin`` that
+                          should be called on shutdown
+        :type shutdowns: :term:`iterable`
+        :param urls: an iterable of functions from the ``plugin`` to call when
+                     matched against a URL
+        :type urls: :term:`iterable`
+        """
+        name = plugin.name
+        if not self.has_plugin(name):
+            raise plugins.exceptions.PluginNotRegistered(name)
+
+        # remove plugin rules, jobs, shutdown functions, and url callbacks
+        self._rules_manager.unregister_plugin(name)
+        self._scheduler.unregister_plugin(name)
+        self.unregister_shutdowns(shutdowns)
+
+        # remove plugin from registry
+        del self._plugins[name]
+
+    def has_plugin(self, name):
+        """Check if the bot has registered a plugin of the specified name.
+
+        :param str name: name of the plugin to check for
+        :return: whether the bot has a plugin named ``name`` registered
+        :rtype: bool
+        """
+        return name in self._plugins
+
+    def get_plugin_meta(self, name):
+        """Get info about a registered plugin by its name.
+
+# coding=utf-8
+# Copyright 2008, Sean B. Palmer, inamidst.com
+# Copyright © 2012, Elad Alfassa <elad@fedoraproject.org>
+# Copyright 2012-2015, Elsie Powell, http://embolalia.com
+# Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
+#
+# Licensed under the Eiffel Forum License 2.
+
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+from ast import literal_eval
+from datetime import datetime
+import inspect
+import itertools
+import logging
+import re
+import signal
+import sys
+import threading
+import time
+
+from sopel import irc, logger, plugins, tools
+from sopel.db import SopelDB
+import sopel.loader
+from sopel.module import NOLIMIT
+from sopel.plugins import jobs as plugin_jobs, rules as plugin_rules
+from sopel.tools import deprecated, Identifier
+import sopel.tools.jobs
+from sopel.trigger import Trigger
+
+
+__all__ = ['Sopel', 'SopelWrapper']
+
+LOGGER = logging.getLogger(__name__)
+QUIT_SIGNALS = [
+    getattr(signal, name)
+    for name in ['SIGUSR1', 'SIGTERM', 'SIGINT']
+    if hasattr(signal, name)
+]
+RESTART_SIGNALS = [
+    getattr(signal, name)
+    for name in ['SIGUSR2', 'SIGILL']
+    if hasattr(signal, name)
+]
+SIGNALS = QUIT_SIGNALS + RESTART_SIGNALS
+
+
+if sys.version_info.major >= 3:
+    unicode = str
+    basestring = str
+    py3 = True
+else:
+    py3 = False
+
+
+class Sopel(irc.AbstractBot):
+    def __init__(self, config, daemon=False):
+        super(Sopel, self).__init__(config)
+        self._daemon = daemon  # Used for iPython. TODO something saner here
+        self.wantsrestart = False
+        self._running_triggers = []
+        self._running_triggers_lock = threading.Lock()
+        self._plugins = {}
+        self._rules_manager = plugin_rules.Manager()
+        self._scheduler = plugin_jobs.Scheduler(self)
+
+        self._times = {}
+        """
+        A dictionary mapping lowercased nicks to dictionaries which map
+        function names to the time which they were last used by that nick.
+        """
+
+        self.server_capabilities = {}
+        """A dict mapping supported IRCv3 capabilities to their options.
+
+        For example, if the server specifies the capability ``sasl=EXTERNAL``,
+        it will be here as ``{"sasl": "EXTERNAL"}``. Capabilities specified
+        without any options will have ``None`` as the value.
+
+        For servers that do not support IRCv3, this will be an empty set.
+        """
+
+        self.channels = tools.SopelIdentifierMemory()
+        """A map of the channels that Sopel is in.
+
+        The keys are :class:`sopel.tools.Identifier`\\s of the channel names,
+        and map to :class:`sopel.tools.target.Channel` objects which contain
+        the users in the channel and their permissions.
+        """
+
+        self.users = tools.SopelIdentifierMemory()
+        """A map of the users that Sopel is aware of.
+
+        The keys are :class:`sopel.tools.Identifier`\\s of the nicknames, and
+        map to :class:`sopel.tools.target.User` instances. In order for Sopel
+        to be aware of a user, it must share at least one mutual channel.
+        """
+
+        self.db = SopelDB(config)
+        """The bot's database, as a :class:`sopel.db.SopelDB` instance."""
+
+        self.memory = tools.SopelMemory()
+        """
+        A thread-safe dict for storage of runtime data to be shared between
+        plugins. See :class:`sopel.tools.SopelMemory`.
+        """
+
+        self.shutdown_methods = []
+        """List of methods to call on shutdown."""
+
+    @property
+    def rules(self):
+        """Rules manager."""
+        return self._rules_manager
+
+    @property
+    def scheduler(self):
+        """Job Scheduler. See :func:`sopel.plugin.interval`."""
+        return self._scheduler
+
+    @property
+    def command_groups(self):
+        """A mapping of plugin names to lists of their commands.
+
+        .. versionchanged:: 7.1
+            This attribute is now generated on the fly from the registered list
+            of commands and nickname commands.
+        """
+        # This was supposed to be deprecated, but the built-in help plugin needs it
+        # TODO: create a new, better, doc interface to remove it
+        plugin_commands = itertools.chain(
+            self._rules_manager.get_all_commands(),
+            self._rules_manager.get_all_nick_commands(),
+        )
+        result = {}
+
+        for plugin, commands in plugin_commands:
+            if plugin not in result:
+                result[plugin] = list(sorted(commands.keys()))
+            else:
+                result[plugin].extend(commands.keys())
+                result[plugin] = list(sorted(result[plugin]))
+
+        return result
+
+    @property
+    def doc(self):
+        """A dictionary of command names to their documentation.
+
+        Each command is mapped to its docstring and any available examples, if
+        declared in the plugin's code.
+
+        .. versionchanged:: 3.2
+            Use the first item in each callable's commands list as the key,
+            instead of the function name as declared in the source code.
+
+        .. versionchanged:: 7.1
+            This attribute is now generated on the fly from the registered list
+            of commands and nickname commands.
+        """
+        # TODO: create a new, better, doc interface to remove it
+        plugin_commands = itertools.chain(
+            self._rules_manager.get_all_commands(),
+            self._rules_manager.get_all_nick_commands(),
+        )
+        commands = (
+            (command, command.get_doc(), command.get_usages())
+            for plugin, commands in plugin_commands
+            for command in commands.values()
+        )
+
+        return dict(
+            (name, (doc.splitlines(), [u['text'] for u in usages]))
+            for command, doc, usages in commands
+            for name in ((command.name,) + command.aliases)
+        )
+
+    @property
+    def hostmask(self):
+        """The current hostmask for the bot :class:`sopel.tools.target.User`.
+
+        :return: the bot's current hostmask
+        :rtype: str
+
+        Bot must be connected and in at least one channel.
+        """
+        if not self.users or self.nick not in self.users:
+            raise KeyError("'hostmask' not available: bot must be connected and in at least one channel.")
+
+        return self.users.get(self.nick).hostmask
+
+    def has_channel_privilege(self, channel, privilege):
+        """Tell if the bot has a ``privilege`` level or above in a ``channel``.
+
+        :param str channel: a channel the bot is in
+        :param int privilege: privilege level to check
+        :raise ValueError: when the channel is unknown
+
+        This method checks the bot's privilege level in a channel, i.e. if it
+        has this level or higher privileges::
+
+            >>> bot.channels['#chan'].privileges[bot.nick] = plugin.OP
+            >>> bot.has_channel_privilege('#chan', plugin.VOICE)
+            True
+
+        The ``channel`` argument can be either a :class:`str` or a
+        :class:`sopel.tools.Identifier`, as long as Sopel joined said channel.
+        If the channel is unknown, a :exc:`ValueError` will be raised.
+        """
+        if channel not in self.channels:
+            raise ValueError('Unknown channel %s' % channel)
+
+        return self.channels[channel].has_privilege(self.nick, privilege)
+
+    # signal handlers
+
+    def set_signal_handlers(self):
+        """Set signal handlers for the bot.
+
+        Before running the bot, this method can be called from the main thread
+        to setup signals. If the bot is connected, upon receiving a signal it
+        will send a ``QUIT`` message. Otherwise, it raises a
+        :exc:`KeyboardInterrupt` error.
+
+        .. note::
+
+            Per the Python documentation of :func:`signal.signal`:
+
+                When threads are enabled, this function can only be called from
+                the main thread; attempting to call it from other threads will
+                cause a :exc:`ValueError` exception to be raised.
+
+        """
+        for obj in SIGNALS:
+            signal.signal(obj, self._signal_handler)
+
+    def _signal_handler(self, sig, frame):
+        if sig in QUIT_SIGNALS:
+            if self.backend.is_connected():
+                LOGGER.warning("Got quit signal, sending QUIT to server.")
+                self.quit('Closing')
+            else:
+                self.hasquit = True  # mark the bot as "want to quit"
+                LOGGER.warning("Got quit signal.")
+                raise KeyboardInterrupt
+        elif sig in RESTART_SIGNALS:
+            if self.backend.is_connected():
+                LOGGER.warning("Got restart signal, sending QUIT to server.")
+                self.restart('Restarting')
+            else:
+                LOGGER.warning("Got restart signal.")
+                self.wantsrestart = True  # mark the bot as "want to restart"
+                self.hasquit = True  # mark the bot as "want to quit"
+                raise KeyboardInterrupt
+
+    # setup
+
+    def setup(self):
+        """Set up Sopel bot before it can run.
+
+        The setup phase is in charge of:
+
+        * setting up logging (configure Python's built-in :mod:`logging`)
+        * setting up the bot's plugins (load, setup, and register)
+        * starting the job scheduler
+        """
+        self.setup_logging()
+        self.setup_plugins()
+        self.post_setup()
+
+    def setup_logging(self):
+        """Set up logging based on config options."""
+        logger.setup_logging(self.settings)
+        base_level = self.settings.core.logging_level or 'INFO'
+        base_format = self.settings.core.logging_format
+        base_datefmt = self.settings.core.logging_datefmt
+
+        # configure channel logging if required by configuration
+        if self.settings.core.logging_channel:
+            channel_level = self.settings.core.logging_channel_level or base_level
+            channel_format = self.settings.core.logging_channel_format or base_format
+            channel_datefmt = self.settings.core.logging_channel_datefmt or base_datefmt
+            channel_params = {}
+            if channel_format:
+                channel_params['fmt'] = channel_format
+            if channel_datefmt:
+                channel_params['datefmt'] = channel_datefmt
+            formatter = logger.ChannelOutputFormatter(**channel_params)
+            handler = logger.IrcLoggingHandler(self, channel_level)
+            handler.setFormatter(formatter)
+
+            # set channel handler to `sopel` logger
             LOGGER = logging.getLogger('sopel')
             LOGGER.addHandler(handler)
 

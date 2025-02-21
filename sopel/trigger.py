@@ -200,7 +200,7 @@ class PreTrigger(object):
             self.plain = formatting.plain(self.args[-1])
 
 
-class Trigger(unicode):
+class Trigger(str):
     """A line from the server, which has matched a callable's rules.
 
     :param config: Sopel's current configuration settings object
@@ -225,7 +225,10 @@ class Trigger(unicode):
     the command (e.g. ``ACTION``) placed mapped to the ``'intent'`` key in
     :attr:`Trigger.tags`.
     """
-    sender = property(lambda self: self._pretrigger.sender)
+    @property
+    def sender(self):
+        return self._pretrigger.sender
+
     """Where the message arrived from.
 
     :type: :class:`~.tools.Identifier`
@@ -241,7 +244,10 @@ class Trigger(unicode):
         else:
             # message sent from a channel
     """
-    time = property(lambda self: self._pretrigger.time)
+    @property
+    def time(self):
+        return self._pretrigger.time
+
     """When the message was received.
 
     :type: naïve :class:`~datetime.datetime` object (no timezone)
@@ -250,14 +256,20 @@ class Trigger(unicode):
     value. Otherwise, :attr:`time` will use the time when the message was
     received by Sopel. In both cases, this time is in UTC.
     """
-    raw = property(lambda self: self._pretrigger.line)
+    @property
+    def raw(self):
+        return self._pretrigger.line
+
     """The entire raw IRC message, as sent from the server.
 
     :type: str
 
     This includes the CTCP ``\\x01`` bytes and command, if they were included.
     """
-    is_privmsg = property(lambda self: self._is_privmsg)
+    @property
+    def is_privmsg(self):
+        return self._is_privmsg
+
     """Whether the message was triggered in a private message.
 
     :type: bool
@@ -265,151 +277,202 @@ class Trigger(unicode):
     ``True`` if the trigger was received in a private message; ``False`` if it
     came from a channel.
     """
-    hostmask = property(lambda self: self._pretrigger.hostmask)
+    @property
+    def hostmask(self):
+        return self._pretrigger.hostmask
+
     """Hostmask of the person who sent the message as ``<nick>!<user>@<host>``.
 
     :type: str
     """
-    user = property(lambda self: self._pretrigger.user)
+    @property
+    def user(self):
+        return self._pretrigger.user
+
     """Local username of the person who sent the message.
 
     :type: str
     """
-    nick = property(lambda self: self._pretrigger.nick)
+    @property
+    def nick(self):
+        return self._pretrigger.nick
+
     """The nickname who sent the message.
 
     :type: :class:`~.tools.Identifier`
     """
-    host = property(lambda self: self._pretrigger.host)
+    @property
+    def host(self):
+        return self._pretrigger.host
+
     """The hostname of the person who sent the message.
 
     :type: str
     """
-    event = property(lambda self: self._pretrigger.event)
+    @property
+    def event(self):
+        return self._pretrigger.event
+
     """The IRC event which triggered the message.
 
     :type: str
+    """
 
     Most plugin :func:`callables <callable>` primarily need to deal with
     ``PRIVMSG``. Other event types like ``NOTICE``, ``NICK``, ``TOPIC``,
     ``KICK``, etc. must be requested using :func:`.plugin.event`.
     """
-    ctcp = property(lambda self: self.tags.get('intent', None))
-    """The CTCP command (if any).
+    @property
+    def ctcp(self):
+        """The CTCP command (if any).
 
-    :type: str
+        :type: str
 
-    Common CTCP commands are ``ACTION``, ``VERSION``, and ``TIME``. Other
-    commands include ``USERINFO``, ``PING``, and various ``DCC`` operations.
+        Common CTCP commands are ``ACTION``, ``VERSION``, and ``TIME``. Other
+        commands include ``USERINFO``, ``PING``, and various ``DCC`` operations.
 
-    .. versionadded:: 7.1
+        .. versionadded:: 7.1
 
-    .. important::
+        .. important::
 
-        Use this attribute instead of the ``intent`` tag in :attr:`tags`.
-        Message intents never made it past the IRCv3 draft stage, and Sopel will
-        drop support for them in a future release.
-    """
-    match = property(lambda self: self._match)
-    """The :ref:`Match object <match-objects>` for the triggering line.
+            Use this attribute instead of the ``intent`` tag in :attr:`tags`.
+            Message intents never made it past the IRCv3 draft stage, and Sopel will
+            drop support for them in a future release.
+        """
+        return self.tags.get('intent', None)
 
-    :type: :ref:`Match object <match-objects>`
-    """
-    group = property(lambda self: self._match.group)
-    """The ``group()`` function of the :attr:`match` attribute.
+    @property
+    def match(self):
+        """The :ref:`Match object <match-objects>` for the triggering line.
 
-    :type: :term:`method`
-    :rtype: str
+        :type: :ref:`Match object <match-objects>`
+        """
+        return self._match
 
-    Any regular-expression :func:`rules <.plugin.rule>` attached to the
-    triggered :func:`callable` may define numbered or named groups that can be
-    retrieved through this property.
+    @property
+    def group(self):
+        """The ``group()`` function of the :attr:`match` attribute.
 
-    Sopel's command decorators each define a predetermined set of numbered
-    groups containing fragments of the line that plugins commonly use.
+        :type: :term:`method`
+        :rtype: str
 
-    .. seealso::
+        Any regular-expression :func:`rules <.plugin.rule>` attached to the
+        triggered :func:`callable` may define numbered or named groups that can be
+        retrieved through this property.
 
-       For more information on predefined numbered match groups in commands,
-       see :func:`.plugin.command`, :func:`.plugin.action_command`, and
-       :func:`.plugin.nickname_command`.
+        Sopel's command decorators each define a predetermined set of numbered
+        groups containing fragments of the line that plugins commonly use.
 
-       Also see Python's :meth:`re.Match.group` documentation for details
-       about this method's behavior.
+        .. seealso::
 
-    """
-    groups = property(lambda self: self._match.groups)
-    """The ``groups()`` function of the :attr:`match` attribute.
+           For more information on predefined numbered match groups in commands,
+           see :func:`.plugin.command`, :func:`.plugin.action_command`, and
+           :func:`.plugin.nickname_command`.
 
-    :type: :term:`method`
-    :rtype: tuple
+           Also see Python's :meth:`re.Match.group` documentation for details
+           about this method's behavior.
 
-    See Python's :meth:`re.Match.groups` documentation for details.
-    """
-    groupdict = property(lambda self: self._match.groupdict)
-    """The ``groupdict()`` function of the :attr:`match` attribute.
+        """
+        return self._match.group
 
-    :type: :term:`method`
-    :rtype: dict
+    @property
+    def groups(self):
+        """The ``groups()`` function of the :attr:`match` attribute.
 
-    See Python's :meth:`re.Match.groupdict` documentation for details.
-    """
-    args = property(lambda self: self._pretrigger.args)
-    """A list containing each of the arguments to an event.
+        :type: :term:`method`
+        :rtype: tuple
 
-    :type: list[str]
+        See Python's :meth:`re.Match.groups` documentation for details.
+        """
+        return self._match.groups
 
-    These are the strings passed between the event name and the colon. For
-    example, when setting ``mode -m`` on the channel ``#example``, args would
-    be ``['#example', '-m']``
-    """
-    urls = property(lambda self: self._pretrigger.urls)
-    """A tuple containing all URLs found in the text.
+    @property
+    def groupdict(self):
+        """The ``groupdict()`` function of the :attr:`match` attribute.
 
-    :type: tuple
+        :type: :term:`method`
+        :rtype: dict
 
-    URLs are listed only for ``PRIVMSG`` or a ``NOTICE``, otherwise this is
-    an empty tuple.
-    """
-    plain = property(lambda self: self._pretrigger.plain)
-    """The text without formatting control codes.
+        See Python's :meth:`re.Match.groupdict` documentation for details.
+        """
+        return self._match.groupdict
 
-    :type: str
+    @property
+    def args(self):
+        """A list containing each of the arguments to an event.
 
-    This is the text of the trigger object without formatting control codes.
-    """
-    tags = property(lambda self: self._pretrigger.tags)
-    """A map of the IRCv3 message tags on the message.
+        :type: list[str]
 
-    :type: dict
-    """
-    admin = property(lambda self: self._admin)
-    """Whether the triggering :attr:`nick` is one of the bot's admins.
+        These are the strings passed between the event name and the colon. For
+        example, when setting ``mode -m`` on the channel ``#example``, args would
+        be ``['#example', '-m']``
+        """
+        return self._pretrigger.args
 
-    :type: bool
+    @property
+    def urls(self):
+        """A tuple containing all URLs found in the text.
 
-    ``True`` if the triggering :attr:`nick` is a Sopel admin; ``False`` if not.
+        :type: tuple
 
-    Note that Sopel's :attr:`~.config.core_section.CoreSection.owner` is also
-    considered to be an admin.
-    """
-    owner = property(lambda self: self._owner)
-    """Whether the :attr:`nick` which triggered the command is the bot's owner.
+        URLs are listed only for ``PRIVMSG`` or a ``NOTICE``, otherwise this is
+        an empty tuple.
+        """
+        return self._pretrigger.urls
 
-    :type: bool
+    @property
+    def plain(self):
+        """The text without formatting control codes.
 
-    ``True`` if the triggering :attr:`nick` is Sopel's owner; ``False`` if not.
-    """
-    account = property(lambda self: self.tags.get('account') or self._account)
-    """The services account name of the user sending the message.
+        :type: str
 
-    :type: str or None
+        This is the text of the trigger object without formatting control codes.
+        """
+        return self._pretrigger.plain
 
-    Note: This is only available if the ``account-tag`` capability or *both*
-    the ``account-notify`` and ``extended-join`` capabilities are available on
-    the connected IRC network. If this is not the case, or if the user sending
-    the message isn't logged in to services, this property will be ``None``.
-    """
+    @property
+    def tags(self):
+        """A map of the IRCv3 message tags on the message.
+
+        :type: dict
+        """
+        return self._pretrigger.tags
+
+    @property
+    def admin(self):
+        """Whether the triggering :attr:`nick` is one of the bot's admins.
+
+        :type: bool
+
+        ``True`` if the triggering :attr:`nick` is a Sopel admin; ``False`` if not.
+
+        Note that Sopel's :attr:`~.config.core_section.CoreSection.owner` is also
+        considered to be an admin.
+        """
+        return self._admin
+
+    @property
+    def owner(self):
+        """Whether the :attr:`nick` which triggered the command is the bot's owner.
+
+        :type: bool
+
+        ``True`` if the triggering :attr:`nick` is Sopel's owner; ``False`` if not.
+        """
+        return self._owner
+
+    @property
+    def account(self):
+        """The services account name of the user sending the message.
+
+        :type: str or None
+
+        Note: This is only available if the ``account-tag`` capability or *both*
+        the ``account-notify`` and ``extended-join`` capabilities are available on
+        the connected IRC network. If this is not the case, or if the user sending
+        the message isn't logged in to services, this property will be ``None``.
+        """
+        return self.tags.get('account') or self._account
 
     def __new__(cls, config, message, match, account=None):
         self = unicode.__new__(cls, message.args[-1] if message.args else '')
