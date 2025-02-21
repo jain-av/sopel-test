@@ -18,4 +18,4 @@ def rawlist(*args):
         >>> rawlist('PRIVMSG :Hello!')
         [b'PRIVMSG :Hello!\\r\\n']
     """
-    return ['{0}\r\n'.format(arg).encode('utf-8') for arg in args]
+    return [f'{arg}\r\n'.encode('utf-8') for arg in args]

@@ -138,8 +138,7 @@ def get_example_test(tested_func, msg, results, privmsg, admin,
                         "Pattern: %s\n"
                         "Output: %s"
                     ) % (expected, output)
-                    if not re.match(expected, output):
-                        raise AssertionError(message)
+                    assert re.match(expected, output), message
                 else:
                     assert expected == output
 
