@@ -7,6 +7,9 @@ import os
 
 from sopel import tools
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 
 class IrcLoggingHandler(logging.Handler):
     """Logging handler for output to an IRC channel.

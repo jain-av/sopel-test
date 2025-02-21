@@ -333,6 +333,1327 @@ def find(*patterns):
 
         The regex rule will match once for each non-overlapping match, from left
         to right, and the function will execute for each of these matches.
+"""
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "find"):
+            function.find = []
+        for value in patterns:
+            if value not in function.find:
+                function.find.append(value)
+        return function
+
+    return add_attribute
+
+
+def find_lazy(*loaders):
+    """Decorate a callable as a find with lazy loading.
+
+    :param loaders: one or more functions to generate a list of **compiled**
+                    regexes to match URLs
+    :type loaders: :term:`function`
+
+    Each ``loader`` function must accept a ``settings`` parameter and return a
+    list (or tuple) of **compiled** regular expressions::
+
+        import re
+
+        def loader(settings):
+            return [re.compile(r'<your_find_pattern>')]
+
+    It will be called by Sopel when the bot parses the plugin to register finds
+    to get its regexes. The ``settings`` argument will be the bot's
+    :class:`sopel.config.Config` object.
+
+    If any of the ``loader`` functions raises a
+    :exc:`~sopel.plugins.exceptions.PluginError` exception, the find will be
+    ignored; it will not fail the plugin's loading.
+
+    The decorated function will behave like any other :func:`callable`::
+
+        from sopel import plugin
+
+        @plugin.find_lazy(loader)
+        def my_find_handler(bot, trigger):
+            bot.say('Find triggered by: %s' % trigger.group(0))
+
+    .. versionadded:: 7.1
+
+    .. seealso::
+
+        When more than one loader is provided, they will be chained together
+        with the :func:`sopel.tools.chain_loaders` function.
+
+    """
+    def decorator(function):
+        function._sopel_callable = True
+        if not hasattr(function, 'find_lazy_loaders'):
+            function.find_lazy_loaders = []
+        function.find_lazy_loaders.extend(loaders)
+        return function
+    return decorator
+
+
+def search(*patterns):
+    """Decorate a function to be called when a line contains the given pattern.
+
+    :param str patterns: one or more regular expression(s)
+
+    Each argument is a regular expression which will trigger the function::
+
+        @search('hello', 'how')
+            # will trigger once on "how are you?"
+            # will trigger once on "hello, what's up?"
+            # will trigger once on "I like to say hello"
+
+    This decorator can be used multiple times to add more rules::
+
+        @search('how')
+        @search('hello')
+            # will trigger once on "how are you?"
+            # will trigger once on "hello, what's up?"
+            # will trigger once on "I like to say hello"
+
+    If the Sopel instance is in a channel, or sent a ``PRIVMSG``, where a
+    string matching this expression is said, the function will execute. Note
+    that captured groups here will be retrievable through the
+    :class:`~sopel.trigger.Trigger` object later.
+
+    Inside the regular expression, some special directives can be used.
+    ``$nick`` will be replaced with the nick of the bot and ``,`` or ``:``, and
+    ``$nickname`` will be replaced with the nick of the bot.
+
+    .. versionadded:: 7.1
+
+    .. note::
+
+        The regex rule will match only once per line, searching the whole line.
+
+        To match for each time an expression is found, use the :func:`find`
+        decorator instead. To match only once at the beginning of the line,
+        use the :func:`rule` decorator instead.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "search"):
+            function.search = []
+        for value in patterns:
+            if value not in function.search:
+                function.search.append(value)
+        return function
+
+    return add_attribute
+
+
+def search_lazy(*loaders):
+    """Decorate a callable as a search with lazy loading.
+
+    :param loaders: one or more functions to generate a list of **compiled**
+                    regexes to match URLs
+    :type loaders: :term:`function`
+
+    Each ``loader`` function must accept a ``settings`` parameter and return a
+    list (or tuple) of **compiled** regular expressions::
+
+        import re
+
+        def loader(settings):
+            return [re.compile(r'<your_search_pattern>')]
+
+    It will be called by Sopel when the bot parses the plugin to register searches
+    to get its regexes. The ``settings`` argument will be the bot's
+    :class:`sopel.config.Config` object.
+
+    If any of the ``loader`` functions raises a
+    :exc:`~sopel.plugins.exceptions.PluginError` exception, the search will be
+    ignored; it will not fail the plugin's loading.
+
+    The decorated function will behave like any other :func:`callable`::
+
+        from sopel import plugin
+
+        @plugin.search_lazy(loader)
+        def my_search_handler(bot, trigger):
+            bot.say('Search triggered by: %s' % trigger.group(0))
+
+    .. versionadded:: 7.1
+
+    .. seealso::
+
+        When more than one loader is provided, they will be chained together
+        with the :func:`sopel.tools.chain_loaders` function.
+
+    """
+    def decorator(function):
+        function._sopel_callable = True
+        if not hasattr(function, 'search_lazy_loaders'):
+            function.search_lazy_loaders = []
+        function.search_lazy_loaders.extend(loaders)
+        return function
+    return decorator
+
+
+def command(*names):
+    """Decorate a function to be a command.
+
+    :param str names: one or more command names
+
+    Each argument is a command name which will trigger the function::
+
+        @command('rejoin', 'j')
+            # will trigger on .rejoin and .j
+            # the group will be 'rejoin' for '.rejoin', and 'j' for '.j'
+
+    This decorator can be used multiple times to add more commands::
+
+        @command('rejoin')
+        @command('j')
+            # will trigger on .rejoin and .j
+            # the group will be 'rejoin' for '.rejoin', and 'j' for '.j'
+
+    When a user types the bot's command prefix (``config.core.prefix``) followed
+    by the command, the function will execute.
+
+    Inside a channel, this will only occur if the message begins with the prefix.
+    In a private message, the prefix is not required.
+
+    .. versionchanged:: 7.0
+
+        The :func:`command` decorator can be called with multiple positional
+        arguments, each used to add a command. This is equivalent to
+        decorating the same function multiple times with this decorator.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "commands"):
+            function.commands = []
+        for value in names:
+            if value not in function.commands:
+                function.commands.append(value)
+        return function
+
+    return add_attribute
+
+
+def commands(*names):
+    """Alias of :func:`command`.
+
+    .. versionadded:: 7.0
+    """
+    return command(*names)
+
+
+def nickname_command(*names):
+    """Decorate a function to be a nickname command.
+
+    :param str names: one or more command names
+
+    Each argument is a command name which will trigger the function::
+
+        @nickname_command('rejoin', 'j')
+            # will trigger on botnick: rejoin and botnick: j
+            # the group will be 'rejoin' for 'botnick: rejoin', and 'j' for 'botnick: j'
+
+    This decorator can be used multiple times to add more commands::
+
+        @nickname_command('rejoin')
+        @nickname_command('j')
+            # will trigger on botnick: rejoin and botnick: j
+            # the group will be 'rejoin' for 'botnick: rejoin', and 'j' for 'botnick: j'
+
+    When a user types the bot's nick followed by ``,`` or ``:``, and then the
+    command, the function will execute.
+
+    Inside a channel, this will only occur if the message begins with the bot's
+    nick. In a private message, the nick is not required.
+
+    .. versionadded:: 7.0
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "nickname_commands"):
+            function.nickname_commands = []
+        for value in names:
+            if value not in function.nickname_commands:
+                function.nickname_commands.append(value)
+        return function
+
+    return add_attribute
+
+
+def nickname_commands(*names):
+    """Alias of :func:`nickname_command`.
+
+    .. versionadded:: 7.0
+    """
+    return nickname_command(*names)
+
+
+def action_command(*names):
+    """Decorate a function to be an action command.
+
+    :param str names: one or more command names
+
+    Each argument is a command name which will trigger the function::
+
+        @action_command('slap', 'hit')
+            # will trigger on .slap and .hit
+            # the group will be 'slap' for '.slap', and 'hit' for '.hit'
+
+    This decorator can be used multiple times to add more commands::
+
+        @action_command('slap')
+        @action_command('hit')
+            # will trigger on .slap and .hit
+            # the group will be 'slap' for '.slap', and 'hit' for '.hit'
+
+    When a user types the bot's command prefix (``config.core.prefix``) followed
+    by the command, the function will execute. The function will have
+    ``trigger.is_action`` set to ``True``.
+
+    Inside a channel, this will only occur if the message begins with the prefix.
+    In a private message, the prefix is not required.
+
+    .. versionadded:: 7.0
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "action_commands"):
+            function.action_commands = []
+        for value in names:
+            if value not in function.action_commands:
+                function.action_commands.append(value)
+        return function
+
+    return add_attribute
+
+
+def action_commands(*names):
+    """Alias of :func:`action_command`.
+
+    .. versionadded:: 7.0
+    """
+    return action_command(*names)
+
+
+def ctcp(type):
+    """Decorate a function to be called when a CTCP message is received.
+
+    :param str type: the CTCP message type
+
+    When a user sends a CTCP message of the given type to the bot, the
+    function will execute.
+
+    Example::
+
+        from sopel import plugin
+
+        @plugin.ctcp("VERSION")
+        def version_check(bot, trigger):
+            bot.ctcp_reply(trigger.nick, "VERSION Sopel v8.0")
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        function.ctcp = type
+        return function
+
+    return add_attribute
+
+
+def event(*types):
+    """Decorate a function to be called when a certain event occurs.
+
+    :param str types: one or more event type(s)
+
+    Each argument is an event type which will trigger the function::
+
+        @event('JOIN', 'PART')
+            # will trigger on any JOIN and PART
+            # the group will be 'JOIN' for 'JOIN', and 'PART' for 'PART'
+
+    This decorator can be used multiple times to add more events::
+
+        @event('JOIN')
+        @event('PART')
+            # will trigger on any JOIN and PART
+            # the group will be 'JOIN' for 'JOIN', and 'PART' for 'PART'
+
+    When the Sopel instance receives a message of the given type, the
+    function will execute.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "events"):
+            function.events = []
+        for value in types:
+            if value not in function.events:
+                function.events.append(value)
+        return function
+
+    return add_attribute
+
+
+def echo(value):
+    """Decorate a function to automatically return a fixed value.
+
+    :param str value: the value to return
+
+    The decorated function will return the given value every time it is called.
+    This decorator is intended for use with the ``rule`` decorator::
+
+        from sopel import plugin
+
+        @plugin.rule("foo")
+        @plugin.echo("bar")
+        def foo():
+            pass
+
+    This will make the bot reply with "bar" when someone says "foo".
+
+    """
+    def inner(func):
+        return lambda bot, trigger: value
+    return inner
+
+
+def example(text):
+    """Document a plugin's usage with a user-facing example.
+
+    :param str text: a usage example
+
+    Example::
+
+        from sopel import plugin
+
+        @plugin.command("weather")
+        @plugin.example(".weather 94043")
+        def weather(bot, trigger):
+            bot.say("It's cold.")
+
+    This is intended to improve usability of the ``help`` command,
+    as described in issue #104.
+
+    """
+    def inner(func):
+        func.example = text
+        return func
+    return inner
+
+
+def label(value):
+    """Label a function for later reference.
+
+    :param str value: an identifier for the function
+
+    This can be used to mark a function as implementing a certain feature, or
+    performing a certain action.
+
+    """
+    def inner(func):
+        func.label = value
+        return func
+    return inner
+
+
+def output_prefix(value):
+    """Give a function's output a consistent prefix.
+
+    :param str value: the string to prepend to each line of output
+
+    This is useful if the output has multiple lines, such as the output of a
+    complex ``help`` command.
+
+    """
+    def inner(func):
+        func.output_prefix = value
+        return func
+    return inner
+
+
+def priority(value):
+    """Set the priority of a function.
+
+    :param str value: a numerical priority, where 0 is the highest
+
+    This can be used to control the order in which functions are executed.
+
+    """
+    def inner(func):
+        func.priority = value
+        return func
+    return inner
+
+
+def rate(value):
+    """Set the rate limit of a function.
+
+    :param int value: the duration, in seconds, to limit the function to
+
+    The decorated function will only execute once every *n* seconds, per user.
+    This prevents abuse, such as spamming or flooding.
+
+    If the function returns :data:`NOLIMIT`, this rate limit will be ignored for
+    the user that triggered it.
+    """
+    def inner(func):
+        func.rate = value
+        return func
+    return inner
+
+
+def require_account(function):
+    """Make a function require a registered account.
+
+    The decorated function will only execute if the user is identified with
+    NickServ (or equivalent).
+
+    """
+    function.require_account = True
+    return function
+
+
+def require_admin(function):
+    """Make a function require admin privileges.
+
+    The decorated function will only execute if the user's hostmask is in the
+    ``core.admins`` list in the configuration file.
+
+    """
+    function.require_admin = True
+    return function
+
+
+def require_owner(function):
+    """Make a function require owner privileges.
+
+    The decorated function will only execute if the user's hostmask is in the
+    ``core.owners`` list in the configuration file.
+
+    .. versionadded:: 7.0
+    """
+    function.require_owner = True
+    return function
+
+
+def require_bot_privilege(privilege):
+    """Make a function require bot channel privileges.
+
+    The decorated function will only execute if the bot has enough channel
+    privileges.
+
+    :param int privilege: required privilege level
+
+    .. versionadded:: 4.1
+    """
+    def add_attribute(function):
+        function.require_bot_privilege = privilege
+        return function
+    return add_attribute
+
+
+def require_privilege(privilege):
+    """Make a function require channel privileges.
+
+    The decorated function will only execute if the user has enough channel
+    privileges.
+
+    :param int privilege: required privilege level
+
+    .. versionadded:: 4.1
+    """
+    def add_attribute(function):
+        function.require_privilege = privilege
+        return function
+    return add_attribute
+
+
+def require_chanmsg(function):
+    """Make a function require a channel message.
+
+    The decorated function will only execute if the message was sent in a
+    channel.
+
+    """
+    function.require_chanmsg = True
+    return function
+
+
+def require_privmsg(function):
+    """Make a function require a private message.
+
+    The decorated function will only execute if the message was sent in a
+    private message.
+
+    """
+    function.require_privmsg = True
+    return function
+
+
+def thread(function):
+    """Make a function execute in a separate thread.
+
+    This will prevent long-running functions from blocking the bot.
+
+    """
+    function.thread = True
+    return function
+
+
+def url(*patterns):
+    """Decorate a function to be called when a URL is posted.
+
+    :param str patterns: one or more regular expression(s)
+
+    Each argument is a regular expression which will trigger the function::
+
+        @url('example.org', 'example.com')
+            # will trigger once on 'http://example.org'
+            # will trigger once on 'https://example.com/index.html'
+
+    This decorator can be used multiple times to add more rules::
+
+        @url('example.org')
+        @url('example.com')
+            # will trigger once on 'http://example.org'
+            # will trigger once on 'https://example.com/index.html'
+
+    If the Sopel instance is in a channel, or sent a ``PRIVMSG``, where a
+    URL matching this expression is said, the function will execute. Note
+    that captured groups here will be retrievable through the
+    :class:`~sopel.trigger.Trigger` object later.
+
+    Inside the regular expression, some special directives can be used.
+    ``$nick`` will be replaced with the nick of the bot and ``,`` or ``:``, and
+    ``$nickname`` will be replaced with the nick of the bot.
+
+    .. versionchanged:: 7.0
+
+        The :func:`url` decorator can be called with multiple positional
+        arguments, each used to add a url. This is equivalent to decorating
+        the same function multiple times with this decorator.
+
+    .. note::
+
+        The regex rule will match only once per line, starting at the beginning
+        of the line only.
+
+        To match for each time an expression is found, use the :func:`url`
+        decorator instead. To match only once from anywhere in the line,
+        use the :func:`search` decorator instead.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "url"):
+            function.url = []
+        for value in patterns:
+            if value not in function.url:
+                function.url.append(value)
+        return function
+
+    return add_attribute
+
+
+def url_lazy(*loaders):
+    """Decorate a callable as a url with lazy loading.
+
+    :param loaders: one or more functions to generate a list of **compiled**
+                    regexes to match URLs
+    :type loaders: :term:`function`
+
+    Each ``loader`` function must accept a ``settings`` parameter and return a
+    list (or tuple) of **compiled** regular expressions::
+
+        import re
+
+        def loader(settings):
+            return [re.compile(r'<your_url_pattern>')]
+
+    It will be called by Sopel when the bot parses the plugin to register urls
+    to get its regexes. The ``settings`` argument will be the bot's
+    :class:`sopel.config.Config` object.
+
+    If any of the ``loader`` functions raises a
+    :exc:`~sopel.plugins.exceptions.PluginError` exception, the url will be
+    ignored; it will not fail the plugin's loading.
+
+    The decorated function will behave like any other :func:`callable`::
+
+        from sopel import plugin
+
+        @plugin.url_lazy(loader)
+        def my_url_handler(bot, trigger):
+            bot.say('URL triggered by: %s' % trigger.group(0))
+
+    .. versionadded:: 7.1
+
+    .. seealso::
+
+        When more than one loader is provided, they will be chained together
+        with the :func:`sopel.tools.chain_loaders` function.
+
+    """
+    def decorator(function):
+        function._sopel_callable = True
+        if not hasattr(function, 'url_lazy_loaders'):
+            function.url_lazy_loaders = []
+        function.url_lazy_loaders.extend(loaders)
+        return function
+    return decorator
+
+def find(*patterns):
+    """Decorate a function to be called for each time a pattern is found in a line.
+
+    :param str patterns: one or more regular expression(s)
+
+    Each argument is a regular expression which will trigger the function::
+
+        @find('hello', 'here')
+            # will trigger once on "hello you"
+            # will trigger twice on "hello here"
+            # will trigger once on "I'm right here!"
+
+    This decorator can be used multiple times to add more rules::
+
+        @find('here')
+        @find('hello')
+            # will trigger once on "hello you"
+            # will trigger twice on "hello here"
+            # will trigger once on "I'm right here!"
+
+    If the Sopel instance is in a channel, or sent a ``PRIVMSG``, the function
+    will execute for each time a received message matches an expression. Each
+    match will also contain the position of the instance it found.
+
+    Inside the regular expression, some special directives can be used.
+    ``$nick`` will be replaced with the nick of the bot and ``,`` or ``:``, and
+    ``$nickname`` will be replaced with the nick of the bot::
+
+        @find('$nickname')
+            # will trigger for each time the bot's nick is in a trigger
+
+    .. versionadded:: 7.1
+
+    .. note::
+
+        The regex rule will match once for each non-overlapping match, from left
+        to right, and the function will execute for each of these matches.
+
+        To match only once from anywhere in the line, use the :func:`search`
+        decorator instead. To match only once from the start of the line,
+        use the :func:`rule` decorator instead.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "find"):
+            function.find = []
+        for value in patterns:
+            if value not in function.find:
+                function.find.append(value)
+        return function
+
+    return add_attribute
+
+
+def find_lazy(*loaders):
+    """Decorate a callable as a find rule with lazy loading.
+
+    :param loaders: one or more functions to generate a list of **compiled**
+                    regexes to match patterns in a line
+    :type loaders: :term:`function`
+
+    Each ``loader`` function must accept a ``settings`` parameter and return a
+    list (or tuple) of **compiled** regular expressions::
+
+        import re
+
+        def loader(settings):
+            return [re.compile(r'<your_rule_pattern>')]
+
+    It will be called by Sopel when the bot parses the plugin to register the
+    find rules to get its regexes. The ``settings`` argument will be the bot's
+    :class:`sopel.config.Config` object.
+
+    If any of the ``loader`` functions raises a
+    :exc:`~sopel.plugins.exceptions.PluginError` exception, the find rule will
+    be ignored; it will not fail the plugin's loading.
+
+    The decorated function will behave like any other :func:`callable`::
+
+        from sopel import plugin
+
+        @plugin.find_lazy(loader)
+        def my_find_rule_handler(bot, trigger):
+            bot.say('Rule triggered by: %s' % trigger.group(0))
+
+    .. versionadded:: 7.1
+
+    .. seealso::
+
+        When more than one loader is provided, they will be chained together
+        with the :func:`sopel.tools.chain_loaders` function.
+
+    """
+    def decorator(function):
+        function._sopel_callable = True
+        if not hasattr(function, 'find_lazy_loaders'):
+            function.find_lazy_loaders = []
+        function.find_lazy_loaders.extend(loaders)
+        return function
+    return decorator
+
+
+def search(*patterns):
+    """Decorate a function to be called when a pattern matches anywhere in a line.
+
+    :param str patterns: one or more regular expression(s)
+
+    Each argument is a regular expression which will trigger the function::
+
+        @search('hello', 'here')
+            # will trigger once on "hello you"
+            # will trigger twice on "hello here"
+            # will trigger once on "I'm right here!"
+
+    This decorator can be used multiple times to add more search rules::
+
+        @search('here')
+        @search('hello')
+            # will trigger once on "hello you"
+            # will trigger twice on "hello here" (once per expression)
+            # will trigger once on "I'm right here!"
+
+    If the Sopel instance is in a channel, or sent a PRIVMSG, where a part
+    of a string matching this expression is said, the function will execute.
+    Note that captured groups here will be retrievable through the
+    :class:`~sopel.trigger.Trigger` object later. The match will also contain
+    the position of the first instance found.
+
+    Inside the regular expression, some special directives can be used.
+    ``$nick`` will be replaced with the nick of the bot and ``,`` or ``:``, and
+    ``$nickname`` will be replaced with the nick of the bot::
+
+        @search('$nickname')
+            # will trigger once when the bot's nick is in a trigger
+
+    .. versionadded:: 7.1
+
+    .. note::
+
+        The regex rule will match for the first instance only, starting from
+        the left of the line, and the function will execute only once per
+        regular expression.
+
+        To match for each time an expression is found, use the :func:`find`
+        decorator instead. To match only once from the start of the line,
+        use the :func:`rule` decorator instead.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "search"):
+            function.search = []
+        for value in patterns:
+            if value not in function.search:
+                function.search.append(value)
+        return function
+
+    return add_attribute
+
+
+def search_lazy(*loaders):
+    """Decorate a callable as a search rule with lazy loading.
+
+    :param loaders: one or more functions to generate a list of **compiled**
+                    regexes to match patterns in a line
+    :type loaders: :term:`function`
+
+    Each ``loader`` function must accept a ``settings`` parameter and return a
+    list (or tuple) of **compiled** regular expressions::
+
+        import re
+
+        def loader(settings):
+            return [re.compile(r'<your_rule_pattern>')]
+
+    It will be called by Sopel when the bot parses the plugin to register the
+    search rules to get its regexes. The ``settings`` argument will be the
+    bot's :class:`sopel.config.Config` object.
+
+    If any of the ``loader`` functions raises a
+    :exc:`~sopel.plugins.exceptions.PluginError` exception, the find rule will
+    be ignored; it will not fail the plugin's loading.
+
+    The decorated function will behave like any other :func:`callable`::
+
+        from sopel import plugin
+
+        @plugin.search_lazy(loader)
+        def my_search_rule_handler(bot, trigger):
+            bot.say('Rule triggered by: %s' % trigger.group(0))
+
+    .. versionadded:: 7.1
+
+    .. seealso::
+
+        When more than one loader is provided, they will be chained together
+        with the :func:`sopel.tools.chain_loaders` function.
+
+    """
+    def decorator(function):
+        function._sopel_callable = True
+        if not hasattr(function, 'search_lazy_loaders'):
+            function.search_lazy_loaders = []
+        function.search_lazy_loaders.extend(loaders)
+        return function
+    return decorator
+
+
+def thread(value):
+    """Decorate a function to specify if it should be run in a separate thread.
+
+    :param bool value: if ``True``, the function is called in a separate thread;
+                       otherwise, from the bot's main thread
+
+    Functions run in a separate thread (as is the default) will not prevent the
+    bot from executing other functions at the same time. Functions not run in a
+    separate thread may be started while other functions are still running, but
+    additional functions will not start until it is completed.
+    """
+    threaded = bool(value)
+
+    def add_attribute(function):
+        function.thread = threaded
+        return function
+
+    return add_attribute
+
+
+def echo(function=None):
+    """Decorate a function to specify that it should receive echo messages.
+
+    This decorator can be used to listen in on the messages that Sopel is
+    sending and react accordingly.
+    """
+    def add_attribute(function):
+        function.echo = True
+        return function
+
+    # hack to allow both @echo and @echo() to work
+    if callable(function):
+        return add_attribute(function)
+    return add_attribute
+
+
+def command(*command_list):
+    """Decorate a function to set one or more commands that should trigger it.
+
+    :param str command_list: one or more command name(s) to match
+
+    This decorator can be used to add multiple commands to one callable in a
+    single line. The resulting match object will have the command as the first
+    group; the rest of the line, excluding leading whitespace, as the second
+    group; and parameters 1 through 4, separated by whitespace, as groups 3-6.
+
+    Example::
+
+        @command("hello")
+            # If the command prefix is "\\.", this would trigger on lines
+            # starting with ".hello".
+
+        @command('j', 'join')
+            # If the command prefix is "\\.", this would trigger on lines
+            # starting with either ".j" or ".join".
+
+    You can use a space in the command name to implement subcommands::
+
+        @command('main sub1', 'main sub2')
+            # For ".main sub1", trigger.group(1) will return "main sub1"
+            # For ".main sub2", trigger.group(1) will return "main sub2"
+
+    But in that case, be careful with the order of the names: if a more generic
+    pattern is defined first, it will have priority over less generic patterns.
+    So for instance, to have ``.main`` and ``.main sub`` working properly, you
+    need to declare them like this::
+
+        @command('main sub', 'main')
+            # This command will react properly to ".main sub" and ".main"
+
+    Then, you can check ``trigger.group(1)`` to know if it was used as
+    ``main sub`` or just ``main`` in your callable. If you declare them in the
+    wrong order, ``.main`` will have priority and you won't be able to take
+    advantage of that.
+
+    Another option is to declare command with subcommands only, like this::
+
+        @command('main sub1')
+            # this command will be triggered on .main sub1
+
+        @command('main sub2')
+            # this other command will be triggered on .main sub2
+
+    In that case, ``.main`` won't trigger anything, and you won't have to
+    inspect the trigger's groups to know which subcommand is triggered.
+
+    .. note::
+
+        If you use this decorator multiple times, remember that the decorators
+        are invoked in the reverse order of appearance::
+
+            # These two decorators...
+            @command('hi')
+            @command('hello')
+
+            # ...are equivalent to this single decorator
+            @command('hello', 'hi')
+
+        See also the `Function Definitions`__ chapter from the Python
+        documentation for more information about functions and decorators.
+
+        .. __: https://docs.python.org/3/reference/compound_stmts.html#function-definitions
+
+    .. note::
+
+# coding=utf-8
+"""This contains decorators and other tools for creating Sopel plugins."""
+# Copyright 2013, Ari Koivula, <ari@koivu.la>
+# Copyright © 2013, Elad Alfassa <elad@fedoraproject.org>
+# Copyright 2013, Lior Ramati <firerogue517@gmail.com>
+# Copyright 2019, deathbybandaid, deathbybandaid.net
+# Copyright 2019, dgw, technobabbl.es
+# Copyright 2019, Florian Strzelecki <florian.strzelecki@gmail.com>
+# Licensed under the Eiffel Forum License 2.
+
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import functools
+import re
+
+__all__ = [
+    # constants
+    'NOLIMIT', 'VOICE', 'HALFOP', 'OP', 'ADMIN', 'OWNER', 'OPER',
+    # decorators
+    'action_command',
+    'action_commands',
+    'command',
+    'commands',
+    'ctcp',
+    'echo',
+    'event',
+    'example',
+    'find',
+    'find_lazy',
+    'interval',
+    'label',
+    'nickname_command',
+    'nickname_commands',
+    'output_prefix',
+    'priority',
+    'rate',
+    'require_account',
+    'require_admin',
+    'require_bot_privilege',
+    'require_chanmsg',
+    'require_owner',
+    'require_privilege',
+    'require_privmsg',
+    'rule',
+    'rule_lazy',
+    'search',
+    'search_lazy',
+    'thread',
+    'unblockable',
+    'url',
+    'url_lazy',
+]
+
+
+NOLIMIT = 1
+"""Return value for ``callable``\\s, which suppresses rate limiting.
+
+Returning this value means the triggering user will not be prevented from
+triggering the same callable again within the rate limit. This can be used,
+for example, to allow a user to retry a failed command immediately.
+
+.. versionadded:: 4.0
+"""
+
+VOICE = 1
+"""Privilege level for the +v channel permission
+
+.. versionadded:: 4.1
+"""
+
+HALFOP = 2
+"""Privilege level for the +h channel permission
+
+.. versionadded:: 4.1
+
+.. important::
+
+    Not all IRC networks support this privilege mode. If you are writing a
+    plugin for public distribution, ensure your code behaves sensibly if only
+    ``+v`` (voice) and ``+o`` (op) modes exist.
+
+"""
+
+OP = 4
+"""Privilege level for the +o channel permission
+
+.. versionadded:: 4.1
+"""
+
+ADMIN = 8
+"""Privilege level for the +a channel permission
+
+.. versionadded:: 4.1
+
+.. important::
+
+    Not all IRC networks support this privilege mode. If you are writing a
+    plugin for public distribution, ensure your code behaves sensibly if only
+    ``+v`` (voice) and ``+o`` (op) modes exist.
+
+"""
+
+OWNER = 16
+"""Privilege level for the +q channel permission
+
+.. versionadded:: 4.1
+
+.. important::
+
+    Not all IRC networks support this privilege mode. If you are writing a
+    plugin for public distribution, ensure your code behaves sensibly if only
+    ``+v`` (voice) and ``+o`` (op) modes exist.
+
+"""
+
+OPER = 32
+"""Privilege level for the +y/+Y channel permissions
+
+Note: Except for these (non-standard) channel modes, Sopel does not monitor or
+store any user's OPER status.
+
+.. versionadded:: 7.0.0
+
+.. important::
+
+    Not all IRC networks support this privilege mode. If you are writing a
+    plugin for public distribution, ensure your code behaves sensibly if only
+    ``+v`` (voice) and ``+o`` (op) modes exist.
+
+"""
+
+
+def unblockable(function):
+    """Decorate a function to exempt it from the ignore/blocks system.
+
+    For example, this can be used to ensure that important events such as
+    ``JOIN`` are always recorded::
+
+        from sopel import plugin
+
+        @plugin.event('JOIN')
+        @plugin.unblockable
+        def on_join_callable(bot, trigger):
+            # do something when a user JOIN a channel
+            # a blocked nickname or hostname *will* trigger this
+            pass
+
+    .. seealso::
+
+        Sopel's :meth:`~sopel.bot.Sopel.dispatch` method.
+
+    """
+    function.unblockable = True
+    return function
+
+
+def interval(*intervals):
+    """Decorate a function to be called by the bot every *n* seconds.
+
+    :param int intervals: one or more duration(s), in seconds
+
+    This decorator can be used multiple times for multiple intervals, or
+    multiple intervals can be given in multiple arguments. The first time the
+    function will be called is *n* seconds after the bot was started.
+
+    Plugin functions decorated by ``interval`` must only take
+    :class:`bot <sopel.bot.Sopel>` as their argument; they do not get a ``trigger``.
+    The ``bot`` argument will not have a context, so functions like
+    ``bot.say()`` will not have a default destination.
+
+    There is no guarantee that the bot is connected to a server or in any
+    channels when the function is called, so care must be taken.
+
+    Example::
+
+        from sopel import plugin
+
+        @plugin.interval(5)
+        def spam_every_5s(bot):
+            if "#here" in bot.channels:
+                bot.say("It has been five seconds!", "#here")
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "interval"):
+            function.interval = []
+        for arg in intervals:
+            if arg not in function.interval:
+                function.interval.append(arg)
+        return function
+
+    return add_attribute
+
+
+def rule(*patterns):
+    """Decorate a function to be called when a line matches the given pattern.
+
+    :param str patterns: one or more regular expression(s)
+
+    Each argument is a regular expression which will trigger the function::
+
+        @rule('hello', 'how')
+            # will trigger once on "how are you?"
+            # will trigger once on "hello, what's up?"
+
+    This decorator can be used multiple times to add more rules::
+
+        @rule('how')
+        @rule('hello')
+            # will trigger once on "how are you?"
+            # will trigger once on "hello, what's up?"
+
+    If the Sopel instance is in a channel, or sent a ``PRIVMSG``, where a
+    string matching this expression is said, the function will execute. Note
+    that captured groups here will be retrievable through the
+    :class:`~sopel.trigger.Trigger` object later.
+
+    Inside the regular expression, some special directives can be used.
+    ``$nick`` will be replaced with the nick of the bot and ``,`` or ``:``, and
+    ``$nickname`` will be replaced with the nick of the bot.
+
+    .. versionchanged:: 7.0
+
+        The :func:`rule` decorator can be called with multiple positional
+        arguments, each used to add a rule. This is equivalent to decorating
+        the same function multiple times with this decorator.
+
+    .. note::
+
+        The regex rule will match only once per line, starting at the beginning
+        of the line only.
+
+        To match for each time an expression is found, use the :func:`find`
+        decorator instead. To match only once from anywhere in the line,
+        use the :func:`search` decorator instead.
+
+    """
+    def add_attribute(function):
+        function._sopel_callable = True
+        if not hasattr(function, "rule"):
+            function.rule = []
+        for value in patterns:
+            if value not in function.rule:
+                function.rule.append(value)
+        return function
+
+    return add_attribute
+
+
+def rule_lazy(*loaders):
+    """Decorate a callable as a rule with lazy loading.
+
+    :param loaders: one or more functions to generate a list of **compiled**
+                    regexes to match URLs
+    :type loaders: :term:`function`
+
+    Each ``loader`` function must accept a ``settings`` parameter and return a
+    list (or tuple) of **compiled** regular expressions::
+
+        import re
+
+        def loader(settings):
+            return [re.compile(r'<your_rule_pattern>')]
+
+    It will be called by Sopel when the bot parses the plugin to register rules
+    to get its regexes. The ``settings`` argument will be the bot's
+    :class:`sopel.config.Config` object.
+
+    If any of the ``loader`` functions raises a
+    :exc:`~sopel.plugins.exceptions.PluginError` exception, the rule will be
+    ignored; it will not fail the plugin's loading.
+
+    The decorated function will behave like any other :func:`callable`::
+
+        from sopel import plugin
+
+        @plugin.rule_lazy(loader)
+        def my_rule_handler(bot, trigger):
+            bot.say('Rule triggered by: %s' % trigger.group(0))
+
+    .. versionadded:: 7.1
+
+    .. seealso::
+
+        When more than one loader is provided, they will be chained together
+        with the :func:`sopel.tools.chain_loaders` function.
+
+    """
+    def decorator(function):
+        function._sopel_callable = True
+        if not hasattr(function, 'rule_lazy_loaders'):
+            function.rule_lazy_loaders = []
+        function.rule_lazy_loaders.extend(loaders)
+        return function
+    return decorator
+
+
+def find(*patterns):
+    """Decorate a function to be called for each time a pattern is found in a line.
+
+    :param str patterns: one or more regular expression(s)
+
+    Each argument is a regular expression which will trigger the function::
+
+        @find('hello', 'here')
+            # will trigger once on "hello you"
+            # will trigger twice on "hello here"
+            # will trigger once on "I'm right here!"
+
+    This decorator can be used multiple times to add more rules::
+
+        @find('here')
+        @find('hello')
+            # will trigger once on "hello you"
+            # will trigger twice on "hello here"
+            # will trigger once on "I'm right here!"
+
+    If the Sopel instance is in a channel, or sent a ``PRIVMSG``, the function
+    will execute for each time a received message matches an expression. Each
+    match will also contain the position of the instance it found.
+
+    Inside the regular expression, some special directives can be used.
+    ``$nick`` will be replaced with the nick of the bot and ``,`` or ``:``, and
+    ``$nickname`` will be replaced with the nick of the bot::
+
+        @find('$nickname')
+            # will trigger for each time the bot's nick is in a trigger
+
+    .. versionadded:: 7.1
+
+    .. note::
+
+        The regex rule will match once for each non-overlapping match, from left
+        to right, and the function will execute for each of these matches.
 
         To match only once from anywhere in the line, use the :func:`search`
         decorator instead. To match only once from the start of the line,
@@ -627,9 +1948,9 @@ def command(*command_list):
         function._sopel_callable = True
         if not hasattr(function, "commands"):
             function.commands = []
-        for command in command_list:
-            if command not in function.commands:
-                function.commands.append(command)
+        for cmd in command_list:
+            if cmd not in function.commands:
+                function.commands.append(cmd)
         return function
     return add_attribute
 
@@ -1140,7 +2461,7 @@ def require_bot_privilege(level, message=None, reply=False):
             if trigger.is_privmsg:
                 return function(bot, trigger, *args, **kwargs)
 
-            if not bot.has_channel_privilege(trigger.sender, level):
+            if not bot.check_channel_privilege(trigger.sender, trigger.nick, level):
                 if message and not callable(message):
                     if reply:
                         bot.reply(message)
@@ -1379,15 +2700,35 @@ class example(object):
             if self.vcr:
                 test = pytest.mark.vcr(test)
 
-            pytest_plugin.insert_into_module(
-                test, func.__module__, func.__name__, 'test_example'
+            from sopel.tests import pytest_plugin
+
+            # avoids doing `import pytest` and causing errors when
+            # dev-dependencies aren't installed
+            pytest = sys.modules['pytest']
+
+            test = pytest_plugin.get_example_test(
+                func, self.msg, self.result, self.privmsg, self.admin,
+                self.owner, self.repeat, self.use_re, self.ignore
             )
-            pytest_plugin.insert_into_module(
-                pytest_plugin.get_disable_setup(),
-                func.__module__,
-                func.__name__,
-                'disable_setup',
-            )
+
+            if self.online:
+                test = pytest.mark.online(test)
+
+            if self.vcr:
+                test = pytest.mark.vcr(test)
+
+            # pytest_plugin.insert_into_module( # Removed for SQLAlchemy 2.0
+            #     test, func.__module__, func.__name__, 'test_example'
+            # )
+            # pytest_plugin.insert_into_module( # Removed for SQLAlchemy 2.0
+            #     pytest_plugin.get_disable_setup(),
+            #     func.__module__,
+            #     func.__name__,
+            #     'disable_setup',
+            # )
+            # Refactored insert_into_module to use set_test_attribute
+            pytest_plugin.set_test_attribute(func, test, 'test_example')
+            pytest_plugin.set_test_attribute(func, pytest_plugin.get_disable_setup(), 'disable_setup')
 
         record = {
             "example": self.msg,
