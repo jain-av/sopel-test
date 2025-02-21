@@ -13,7 +13,7 @@ def pytest_addoption(parser):
 def pytest_collection_modifyitems(config, items):
     # first, make sure things run in order
     # needed to mitigate some weird quirk of vcrpy on Python 3.3, no idea why
-    items.sort(key=lambda item: (item.fspath or '') + '::' + item.name)
+    items.sort(key=lambda item: (str(item.path) or '') + '::' + item.name)
 
     # rest of this is handling for "offline mode"
     if not config.getoption('--offline'):
