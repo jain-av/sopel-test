@@ -65,13 +65,13 @@ def test_get_label_pyfile_loaded(plugin_tmpfile):
 def test_get_label_entrypoint(plugin_tmpfile):
     # generate setuptools Distribution object
     distrib_dir = os.path.dirname(plugin_tmpfile.strpath)
-    distrib = pkg_resources.Distribution(distrib_dir)
+    distrib = pkg_resources.Distribution.from_directory(distrib_dir)
     sys.path.append(distrib_dir)
 
     # load the entry point
     try:
-        entry_point = pkg_resources.EntryPoint(
-            'test_plugin', 'file_mod', dist=distrib)
+        entry_point = pkg_resources.EntryPoint.parse(
+            'test_plugin = file_mod:plugin', dist=distrib)
         plugin = handlers.EntryPointPlugin(entry_point)
         plugin.load()
     finally:

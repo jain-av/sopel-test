@@ -8,7 +8,7 @@ import pytest
 
 from sopel import bot, loader, module, plugin, trigger
 from sopel.plugins import rules
-from sopel.tests import rawlist
+from sopel.testing import rawlist
 
 
 TMP_CONFIG = """
@@ -281,7 +281,6 @@ def test_manager_url_callback(mockbot):
         ('testplugin', [rule]),
     ]
 
-
 def test_manager_unregister_plugin(mockbot):
     regex = re.compile('.*')
     a_rule = rules.Rule([regex], plugin='plugin_a', label='the_rule')
@@ -311,8 +310,8 @@ def test_manager_unregister_plugin(mockbot):
 
     items = manager.get_triggered_rules(mockbot, pretrigger)
     assert len(items) == 2, 'Only 2 must match by now'
-    assert b_rule in items[0]
-    assert b_command in items[1]
+    assert any(b_rule == item[0] for item in items)
+    assert any(b_command == item[0] for item in items)
 
 
 def test_manager_unregister_plugin_url_callbacks(mockbot):
@@ -345,8 +344,8 @@ def test_manager_unregister_plugin_url_callbacks(mockbot):
 
     items = manager.get_triggered_rules(mockbot, pretrigger)
     assert len(items) == 2, 'Only 2 must match by now'
-    assert b_rule in items[0]
-    assert b_callback in items[1]
+    assert any(b_rule == item[0] for item in items)
+    assert any(b_callback == item[0] for item in items)
 
 
 def test_manager_unregister_plugin_unknown():
@@ -386,8 +385,8 @@ def test_manager_rule_trigger_on_event(mockbot):
     assert len(items) == 2, 'Exactly two rules must match'
 
     # rules are matched in their registration order
-    assert rule_default in items[0]
-    assert rule_events in items[1]
+    assert any(rule_default == item[0] for item in items)
+    assert any(rule_events == item[0] for item in items)
 
     line = ':Foo!foo@example.com NOTICE #sopel :Hello, world'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
@@ -395,7 +394,7 @@ def test_manager_rule_trigger_on_event(mockbot):
     items = manager.get_triggered_rules(mockbot, pretrigger)
     assert len(items) == 1, 'Exactly one rule must match'
 
-    assert rule_events in items[0]
+    assert any(rule_events == item[0] for item in items)
 
 
 def test_manager_has_command():
@@ -926,7 +925,7 @@ def test_rule_from_callable_lazy(mockbot):
         ]
 
     # prepare callable
-    @plugin.rule_lazy(lazy_loader)
+    @plugin.rule(lazy_loader)
     def handler(wrapped, trigger):
         wrapped.say('Hi!')
         return 'The return value: %s' % trigger.group(0)
@@ -935,7 +934,7 @@ def test_rule_from_callable_lazy(mockbot):
     handler.plugin_name = 'testplugin'
 
     # create rule from a cleaned callable
-    rule = rules.Rule.from_callable_lazy(mockbot.settings, handler)
+    rule = rules.Rule.from_callable(mockbot.settings, handler)
     assert str(rule) == '<Rule testplugin.handler (4)>'
 
     # match on "Hello" twice
@@ -970,7 +969,7 @@ def test_rule_from_callable_invalid(mockbot):
         ]
 
     # prepare callable
-    @plugin.rule_lazy(lazy_loader)
+    @plugin.rule(lazy_loader)
     def handler(wrapped, trigger):
         wrapped.reply('Hi!')
 
@@ -998,7 +997,7 @@ def test_rule_from_callable_lazy_invalid(mockbot):
 
 def test_rule_from_callable_lazy_invalid_no_regex(mockbot):
     # prepare callable
-    @plugin.rule_lazy(lambda *args: [])
+    @plugin.rule(lambda *args: [])
     def handler(wrapped, trigger, match=None):
         wrapped.reply('Hi!')
 
@@ -1257,7 +1256,7 @@ def test_kwargs_from_callable_examples_test(mockbot):
     assert 'usages' in kwargs
     assert 'tests' in kwargs
     assert 'doc' in kwargs
-    assert kwargs['usages'] == (expected,), 'The first example must be used'
+    assert kwargs['usages'] == (expected,)
     assert kwargs['tests'] == expected_tests
     assert kwargs['doc'] is None
 
@@ -1361,12 +1360,12 @@ def test_kwargs_from_callable_examples_doc(mockbot):
     assert 'tests' in kwargs
     assert 'doc' in kwargs
     assert kwargs['usages'] == expected_usages
-    assert kwargs['tests'] == tuple(), 'There must be no test'
+    assert kwargs['tests'] == tuple()
     assert kwargs['doc'] == (
         'This is the doc you are looking for.\n'
         '\n'
         'And now with extended text, for testing purpose only.'
-    ), 'The docstring must have been cleaned.'
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1556,7 +1555,7 @@ def test_command_get_doc():
 def test_command_has_alias(mockbot):
     rule = rules.Command('hello', r'\.', aliases=['hi'])
     assert rule.has_alias('hi')
-    assert not rule.has_alias('hello'), 'The name must not be an alias!'
+    assert not rule.has_alias('hello')
     assert not rule.has_alias('unknown')
 
 
@@ -1566,8 +1565,7 @@ def test_command_match(mockbot):
 
     rule = rules.Command('hello', r'\.')
     matches = list(rule.match(mockbot, pretrigger))
-    assert len(matches) == 1, 'Exactly one match must be found'
-
+    assert len(matches) == 1
     match = matches[0]
     assert match.group(0) == '.hello'
     assert match.group(1) == 'hello'
@@ -1591,10 +1589,586 @@ def test_command_match_aliases(mockbot):
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
 
     rule = rules.Command('hello', r'\.', aliases=['hi'])
-    assert len(list(rule.match(mockbot, pretrigger))) == 1
+    matches = list(rule.match(mockbot, pretrigger))
+    assert len(matches) == 1
+    match = matches[0]
+    assert match.group(0) == '.hi'
+    assert match.group(1) == 'hi'
+    assert match.group(2) is None
+    assert match.group(3) is None
+    assert match.group(4) is None
+    assert match.group(5) is None
+    assert match.group(6) is None
+
+
+def test_command_parse(mockbot):
+    rule = rules.Command('hello', r'\.')
+    results = list(rule.parse('.hello'))
+
+    assert len(results) == 1
+    assert results[0].group(0) == '.hello'
+    assert results[0].group(1) == 'hello'
+
+
+def test_command_parse_with_args(mockbot):
+    rule = rules.Command('hello arg', r'\.')
+    results = list(rule.parse('.hello arg'))
+
+    assert len(results) == 1
+    assert results[0].group(0) == '.hello arg'
+    assert results[0].group(1) == 'hello'
+    assert results[0].group(2) == 'arg'
+
+
+def test_command_parse_with_more_args(mockbot):
+    rule = rules.Command('hello arg more', r'\.')
+    results = list(rule.parse('.hello arg more'))
+
+    assert len(results) == 1
+    assert results[0].group(0) == '.hello arg more'
+    assert results[0].group(1) == 'hello'
+    assert results[0].group(2) == 'arg'
+    assert results[0].group(3) == 'more'
+
+
+def test_command_parse_too_few_args(mockbot):
+    rule = rules.Command('hello arg', r'\.')
+    assert not list(rule.parse('.hello'))
+
+
+def test_command_parse_too_much_args(mockbot):
+    rule = rules.Command('hello arg', r'\.')
+    results = list(rule.parse('.hello arg more'))
+
+    assert len(results) == 1
+    assert results[0].group(0) == '.hello arg more'
+    assert results[0].group(1) == 'hello'
+    assert results[0].group(2) == 'arg'
+    assert results[0].group(3) == 'more'
+
+
+def test_command_parse_command_aliases(mockbot):
+    rule = rules.Command('hello arg', r'\.', aliases=['hi'])
+    results = list(rule.parse('.hi'))
+
+    assert len(results) == 1
+    assert results[0].group(0) == '.hi'
+    assert results[0].group(1) == 'hi'
+
+
+def test_command_parse_command_aliases_with_args(mockbot):
+    rule = rules.Command('hello arg', r'\.', aliases=['hi'])
+    results = list(rule.parse('.hi test'))
+
+    assert len(results) == 1
+    assert results[0].group(0) == '.hi test'
+    assert results[0].group(1) == 'hi'
+    assert results[0].group(2) == 'test'
+
+
+def test_command_execute(mockbot):
+    rule = rules.Command('hello arg', r'\.')
+
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hello world'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    matches = list(rule.match(mockbot, pretrigger))
+    match = matches[0]
+    match_trigger = trigger.Trigger(
+        mockbot.settings, pretrigger, match, account=None)
+
+    with pytest.raises(RuntimeError):
+        rule.execute(mockbot, match_trigger)
+
+    def handler(wrapped, trigger):
+        wrapped.say('Hi!')
+        return 'The return value'
+
+    rule = rules.Command('hello arg', r'\.', handler=handler)
+    matches = list(rule.match(mockbot, pretrigger))
+    match = matches[0]
+    match_trigger = trigger.Trigger(
+        mockbot.settings, pretrigger, match, account=None)
+    wrapped = bot.SopelWrapper(mockbot, match_trigger)
+    result = rule.execute(wrapped, match_trigger)
+
+    assert mockbot.backend.message_sent == rawlist('PRIVMSG #sopel :Hi!')
+    assert result == 'The return value'
+
+
+def test_command_from_callable(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+    handler.plugin_name = 'testplugin'
+
+    # create rule from a cleaned callable
+    rule = rules.Command.from_callable(mockbot.settings, handler)
+    assert str(rule) == '<Command testplugin.hello [hi|hey|hello_hi]>'
+
+    # match on "Hello"
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hello'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    results = list(rule.match(mockbot, pretrigger))
+
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == '.hello'
+
+    # match on "hi"
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hi'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    results = list(rule.match(mockbot, pretrigger))
+
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == '.hi'
+
+    # match on "hey"
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hey'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    results = list(rule.match(mockbot, pretrigger))
+
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == '.hey'
+
+
+def test_command_from_callable_lazy(mockbot):
+    def lazy_loader(settings):
+        return ['hello', 'hi', 'hey', 'hello_hi']
+
+    # prepare callable
+    @plugin.command_lazy(lazy_loader)
+    def handler(wrapped, trigger):
+        wrapped.say('Hi!')
+        return 'The return value: %s' % trigger.group(0)
+
+    loader.clean_callable(handler, mockbot.settings)
+    handler.plugin_name = 'testplugin'
+
+    # create rule from a cleaned callable
+    rule = rules.Command.from_callable_lazy(mockbot.settings, handler)
+    assert str(rule) == '<Command testplugin.hello [hi|hey|hello_hi]>'
+
+    # match on "Hello"
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hello'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    results = list(rule.match(mockbot, pretrigger))
+
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == '.hello'
+
+    # match on "hi"
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hi'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    results = list(rule.match(mockbot, pretrigger))
+
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == '.hi'
+
+    # match on "hey"
+    line = ':Foo!foo@example.com PRIVMSG #sopel :.hey'
+    pretrigger = trigger.PreTrigger(mockbot.nick, line)
+    results = list(rule.match(mockbot, pretrigger))
+
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == '.hey'
+
+
+def test_command_from_callable_invalid(mockbot):
+    # prepare callable
+    @module.commands('hello arg')
+    def handler(wrapped, trigger, match=None):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+    handler.plugin_name = 'testplugin'
+
+    # create rule from a cleaned callable
+    with pytest.raises(RuntimeError):
+        rules.Command.from_callable(mockbot.settings, handler)
+
+
+def test_command_from_callable_lazy_invalid(mockbot):
+    def lazy_loader(settings):
+        return ['hello arg']
+
+    # prepare callable
+    @plugin.command_lazy(lazy_loader)
+    def handler(wrapped, trigger, match=None):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+    handler.plugin_name = 'testplugin'
+
+    # create rule from a cleaned callable
+    with pytest.raises(RuntimeError):
+        rules.Command.from_callable_lazy(mockbot.settings, handler)
+
+
+# -----------------------------------------------------------------------------
+# test classmethod :meth:`Command.kwargs_from_callable`
+
+def test_command_kwargs_from_callable(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+    handler.plugin_name = 'testplugin'  # normally added by the Plugin handler
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+
+    assert 'plugin' in kwargs
+    assert 'label' in kwargs
+    assert 'priority' in kwargs
+    assert 'events' in kwargs
+    assert 'intents' in kwargs
+    assert 'allow_echo' in kwargs
+    assert 'threaded' in kwargs
+    assert 'output_prefix' in kwargs
+    assert 'unblockable' in kwargs
+    assert 'usages' in kwargs
+    assert 'tests' in kwargs
+    assert 'doc' in kwargs
+
+    assert kwargs['plugin'] == 'testplugin'
+    assert kwargs['label'] is None
+    assert kwargs['priority'] == rules.PRIORITY_MEDIUM
+    assert kwargs['events'] == ['PRIVMSG']
+    assert kwargs['intents'] == []
+    assert kwargs['allow_echo'] is False
+    assert kwargs['threaded'] is True
+    assert kwargs['output_prefix'] == ''
+    assert kwargs['unblockable'] is False
+    assert kwargs['usages'] == tuple()
+    assert kwargs['tests'] == tuple()
+    assert kwargs['doc'] is None
+
+
+def test_command_kwargs_from_callable_label(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @plugin.label('hello_command')
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'label' in kwargs
+    assert kwargs['label'] == 'hello_command'
+
+
+def test_command_kwargs_from_callable_priority(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.priority(rules.PRIORITY_LOW)
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'priority' in kwargs
+    assert kwargs['priority'] == rules.PRIORITY_LOW
+
+
+def test_command_kwargs_from_callable_event(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.event('PRIVMSG', 'NOTICE')
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'events' in kwargs
+    assert kwargs['events'] == ['PRIVMSG', 'NOTICE']
+
+
+def test_command_kwargs_from_callable_intent(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.intent('ACTION')
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'intents' in kwargs
+    assert kwargs['intents'] == [re.compile(r'ACTION', re.IGNORECASE)]
+
+
+def test_command_kwargs_from_callable_allow_echo(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.echo
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'allow_echo' in kwargs
+    assert kwargs['allow_echo'] is True
+
+
+def test_command_kwargs_from_callable_threaded(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.thread(False)
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'threaded' in kwargs
+    assert kwargs['threaded'] is False
+
+
+def test_command_kwargs_from_callable_unblockable(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.unblockable
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'unblockable' in kwargs
+    assert kwargs['unblockable'] is True
+
+
+def test_command_kwargs_from_callable_rate_limit(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.rate(user=20, channel=30, server=40)
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+    assert 'rate_limit' in kwargs
+    assert 'channel_rate_limit' in kwargs
+    assert 'global_rate_limit' in kwargs
+    assert kwargs['rate_limit'] == 20
+    assert kwargs['channel_rate_limit'] == 30
+    assert kwargs['global_rate_limit'] == 40
+
+
+def test_command_kwargs_from_callable_examples(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.example('hello')
+    def handler(wrapped, trigger):
+        """This is the doc you are looking for."""
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+
+    # expectations
+    expected = {
+        'example': 'hello',
+        'result': None,
+        'is_pattern': False,
+        'is_help': False,
+        'is_owner': False,
+        'is_admin': False,
+        'is_private_message': False,
+    }
+
+    # reality
+    assert 'usages' in kwargs
+    assert 'tests' in kwargs
+    assert 'doc' in kwargs
+    assert kwargs['usages'] == (expected,)
+    assert kwargs['tests'] == tuple()
+    assert kwargs['doc'] == 'This is the doc you are looking for.'
+
+
+def test_command_kwargs_from_callable_examples_test(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.example('hi', 'Hi!')
+    @module.example('hello', 'Hi!')
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+
+    # expectations
+    expected = {
+        'example': 'hello',
+        'result': ['Hi!'],
+        'is_pattern': False,
+        'is_help': False,
+        'is_owner': False,
+        'is_admin': False,
+        'is_private_message': False,
+    }
+    expected_tests = (
+        {
+            'example': 'hello',
+            'result': ['Hi!'],
+            'is_pattern': False,
+            'is_help': False,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+        {
+            'example': 'hi',
+            'result': ['Hi!'],
+            'is_pattern': False,
+            'is_help': False,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+    )
+
+    # reality
+    assert 'usages' in kwargs
+    assert 'tests' in kwargs
+    assert 'doc' in kwargs
+    assert kwargs['usages'] == (expected,)
+    assert kwargs['tests'] == expected_tests
+    assert kwargs['doc'] is None
+
+
+def test_command_kwargs_from_callable_examples_help(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.example('hi', user_help=True)
+    @module.example('hey', 'Hi!')
+    @module.example('hello', 'Hi!', user_help=True)
+    def handler(wrapped, trigger):
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+
+    # expectations
+    expected_usages = (
+        {
+            'example': 'hello',
+            'result': ['Hi!'],
+            'is_pattern': False,
+            'is_help': True,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+        {
+            'example': 'hi',
+            'result': None,
+            'is_pattern': False,
+            'is_help': True,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+    )
+    expected_tests = (
+        {
+            'example': 'hello',
+            'result': ['Hi!'],
+            'is_pattern': False,
+            'is_help': True,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+        {
+            'example': 'hey',
+            'result': ['Hi!'],
+            'is_pattern': False,
+            'is_help': False,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+    )
+
+    # reality
+    assert 'usages' in kwargs
+    assert 'tests' in kwargs
+    assert 'doc' in kwargs
+    assert kwargs['usages'] == expected_usages
+    assert kwargs['tests'] == expected_tests
+    assert kwargs['doc'] is None
+
+
+def test_command_kwargs_from_callable_examples_doc(mockbot):
+    # prepare callable
+    @module.commands('hello', 'hi', 'hey', 'hello_hi')
+    @module.example('hello')
+    def handler(wrapped, trigger):
+        """This is the doc you are looking for.
+
+        And now with extended text, for testing purpose only.
+        """
+        wrapped.reply('Hi!')
+
+    loader.clean_callable(handler, mockbot.settings)
+
+    # get kwargs
+    kwargs = rules.Command.kwargs_from_callable(handler)
+
+    # expectations
+    expected_usages = (
+        {
+            'example': 'hello',
+            'result': None,
+            'is_pattern': False,
+            'is_help': False,
+            'is_owner': False,
+            'is_admin': False,
+            'is_private_message': False,
+        },
+    )
+
+    # reality
+    assert 'usages' in kwargs
+    assert 'tests' in kwargs
+    assert 'doc' in kwargs
+    assert kwargs['usages'] == expected_usages
+    assert kwargs['tests'] == tuple()
+    assert kwargs['doc'] == (
+        'This is the doc you are looking for.\n'
+        '\n'
+        'And now with extended text, for testing purpose only.'
+    )
+
+    rule = rules.Command('hello', r'\.', aliases=['hi'])
+    assert rule.match(mockbot, pretrigger)
 
     rule = rules.Command('hello', r'\?', aliases=['hi'])
-    assert not list(rule.match(mockbot, pretrigger))
+    assert not rule.match(mockbot, pretrigger)
 
 
 def test_command_match_subcommand(mockbot):
@@ -1602,10 +2176,9 @@ def test_command_match_subcommand(mockbot):
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
 
     rule = rules.Command('main sub', r'\.')
-    matches = list(rule.match(mockbot, pretrigger))
-    assert len(matches) == 1, 'Exactly one match must be found'
+    match = rule.match(mockbot, pretrigger)
+    assert match, 'Exactly one match must be found'
 
-    match = matches[0]
     assert match.group(0) == '.main sub'
     assert match.group(1) == 'main sub'
     assert match.group(2) is None
@@ -1623,10 +2196,9 @@ def test_command_match_subcommand_args(mockbot):
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
 
     rule = rules.Command('main sub', r'\.')
-    matches = list(rule.match(mockbot, pretrigger))
-    assert len(matches) == 1, 'Exactly one match must be found'
+    match = rule.match(mockbot, pretrigger)
+    assert match, 'Exactly one match must be found'
 
-    match = matches[0]
     assert match.group(0) == '.main sub arg1 arg2 arg3 arg4 arg5'
     assert match.group(1) == 'main sub', (
         'The command match must include the subcommand')
@@ -1648,10 +2220,9 @@ def test_command_match_subcommand_aliases(mockbot):
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
 
     rule = rules.Command('main', r'\.', aliases=['main sub', 'main other'])
-    matches = list(rule.match(mockbot, pretrigger))
-    assert len(matches) == 1, 'Exactly one match must be found'
+    match = rule.match(mockbot, pretrigger)
+    assert match, 'Exactly one match must be found'
 
-    match = matches[0]
     assert match.group(0) == '.main sub arg1'
     assert match.group(1) == 'main', (
         'Because the name is `main`, it has priority')
@@ -1667,10 +2238,9 @@ def test_command_match_subcommand_aliases(mockbot):
 
     # reverse order
     rule = rules.Command('main sub', r'\.', aliases=['main', 'main other'])
-    matches = list(rule.match(mockbot, pretrigger))
-    assert len(matches) == 1, 'Exactly one match must be found'
+    match = rule.match(mockbot, pretrigger)
+    assert match, 'Exactly one match must be found'
 
-    match = matches[0]
     assert match.group(0) == '.main sub arg1'
     assert match.group(1) == 'main sub', (
         'Because the name is now `main sub`, it has priority')
@@ -1687,10 +2257,9 @@ def test_command_match_subcommand_aliases(mockbot):
     # check the "main other", defined as the *last* alias
     line = ':Foo!foo@example.com PRIVMSG #sopel :.main other arg1'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    matches = list(rule.match(mockbot, pretrigger))
-    assert len(matches) == 1, 'Exactly one match must be found'
+    match = rule.match(mockbot, pretrigger)
+    assert match, 'Exactly one match must be found'
 
-    match = matches[0]
     assert match.group(0) == '.main other arg1'
     assert match.group(1) == 'main', (
         'Because the alias `other` is last, alias `main` has priority')
@@ -1719,44 +2288,41 @@ def test_command_from_callable(mockbot):
     # match on ".hello"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.hello'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.hello'
     assert result.group(1) == 'hello'
 
     # match on ".hi"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.hi'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.hi'
     assert result.group(1) == 'hi'
 
     # match on ".hey"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.hey'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.hey'
     assert result.group(1) == 'hey'
 
     # does not match on "hello"
     line = ':Foo!foo@example.com PRIVMSG #sopel :hello'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
-    assert not results
+    result = rule.match(mockbot, pretrigger)
+    assert not result
 
     # does not match on ".bye"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.bye'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
-    assert not results
+    result = rule.match(mockbot, pretrigger)
+    assert not result
 
 
 def test_command_from_callable_subcommand(mockbot):
@@ -1773,18 +2339,17 @@ def test_command_from_callable_subcommand(mockbot):
     # match on ".main sub"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.main sub'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.main sub'
     assert result.group(1) == 'main sub'
 
     # does not match on ".main"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.main'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
-    assert not results
+    result = rule.match(mockbot, pretrigger)
+    assert not result
 
 
 def test_command_from_callable_subcommand_aliases(mockbot):
@@ -1802,10 +2367,9 @@ def test_command_from_callable_subcommand_aliases(mockbot):
     # match on ".main sub": .main matches first
     line = ':Foo!foo@example.com PRIVMSG #sopel :.main sub'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.main sub'
     assert result.group(1) == 'main', (
         'Because "main" is declared first, it must match first')
@@ -1813,20 +2377,18 @@ def test_command_from_callable_subcommand_aliases(mockbot):
     # match on ".main"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.main'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.main'
     assert result.group(1) == 'main'
 
     # match on ".reverse sub": as it's declared first, it'll take priority
     line = ':Foo!foo@example.com PRIVMSG #sopel :.reverse sub'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.reverse sub'
     assert result.group(1) == 'reverse sub', (
         'Because "reverse sub" is declared first, it must match first')
@@ -1834,10 +2396,9 @@ def test_command_from_callable_subcommand_aliases(mockbot):
     # match on ".main"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.reverse'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, 'Exactly 1 command must match'
-    result = results[0]
+    assert result, 'Exactly 1 command must match'
     assert result.group(0) == '.reverse'
     assert result.group(1) == 'reverse'
 
@@ -1859,11 +2420,10 @@ def test_command_from_callable_regex_pattern(mockbot):
     # match on ".main anything"
     line = ':Foo!foo@example.com PRIVMSG #sopel :.main anything'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = list(rule.match(mockbot, pretrigger))
+    result = rule.match(mockbot, pretrigger)
 
-    assert len(results) == 1, (
+    assert result, (
         'Exactly 1 command must match; MUST fail for Sopel 8.0')
-    result = results[0]
     assert result.group(0) == '.main anything'
     assert result.group(1) == 'main anything'
     assert result.group(2) is None
@@ -1871,7 +2431,6 @@ def test_command_from_callable_regex_pattern(mockbot):
     assert result.group(4) is None
     assert result.group(5) is None
     assert result.group(6) is None
-
 
 def test_command_from_callable_invalid(mockbot):
     # prepare callable
@@ -1882,7 +2441,7 @@ def test_command_from_callable_invalid(mockbot):
     loader.clean_callable(handler, mockbot.settings)
 
     # create rule from a cleaned callable
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError):
         rules.Command.from_callable(mockbot.settings, handler)
 
 
@@ -2066,7 +2625,7 @@ def test_nick_command_from_callable_invalid(mockbot):
     loader.clean_callable(handler, mockbot.settings)
 
     # create rule from a cleaned callable
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError):
         rules.NickCommand.from_callable(mockbot.settings, handler)
 
 
@@ -2169,8 +2728,6 @@ def test_nick_command_from_callable_regex_pattern(mockbot):
     def handler(wrapped, trigger):
         wrapped.reply('Hi!')
 
-    loader.clean_callable(handler, mockbot.settings)
-
     # create rule from a cleaned callable
     rule = rules.NickCommand.from_callable(mockbot.settings, handler)
 
@@ -2193,6 +2750,7 @@ def test_nick_command_from_callable_regex_pattern(mockbot):
 
 # -----------------------------------------------------------------------------
 # tests for :class:`sopel.plugins.rules.ActionCommand`
+
 
 def test_action_command_str():
     rule = rules.ActionCommand('hello', plugin='testplugin')
@@ -2399,6 +2957,7 @@ def test_action_command_from_callable_regex_pattern(mockbot):
 # -----------------------------------------------------------------------------
 # tests for :class:`sopel.plugins.rules.FindRule`
 
+
 def test_find_rule_str():
     regex = re.compile(r'.*')
     rule = rules.FindRule([regex], plugin='testplugin', label='testrule')
@@ -2467,7 +3026,7 @@ def test_find_rule_from_callable(mockbot):
     assert len(results) == 2, 'Exactly 2 rules must match'
     assert all(result.group(0) == 'hi' for result in results)
 
-    # match on "hey" twice
+    # match on "hey" only once
     line = ':Foo!foo@example.com PRIVMSG #sopel :hey how are you doing?'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
     results = list(rule.match(mockbot, pretrigger))
@@ -2543,16 +3102,16 @@ def test_search_rule_from_callable(mockbot):
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
     results = list(rule.match(mockbot, pretrigger))
 
-    assert len(results) == 2, 'Exactly 2 rules must match'
-    assert all(result.group(0) == 'Hello' for result in results)
+    assert len(results) == 1, 'Exactly 1 rules must match'
+    assert results[0].group(0) == 'Hello'
 
     # match on "hi" twice
     line = ':Foo!foo@example.com PRIVMSG #sopel :hi!'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
     results = list(rule.match(mockbot, pretrigger))
 
-    assert len(results) == 2, 'Exactly 2 rules must match'
-    assert all(result.group(0) == 'hi' for result in results)
+    assert len(results) == 1, 'Exactly 1 rule must match'
+    assert results[0].group(0) == 'hi'
 
     # match on "hey" once
     line = ':Foo!foo@example.com PRIVMSG #sopel :hey how are you doing?'
