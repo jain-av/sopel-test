@@ -218,14 +218,13 @@ class EquationEvaluator(ExpressionEvaluator):
     }
 
     def __init__(self):
-        ExpressionEvaluator.__init__(
-            self,
+        super().__init__(
             bin_ops=self.__bin_ops,
             unary_ops=self.__unary_ops
         )
 
     def __call__(self, expression_str):
-        result = ExpressionEvaluator.__call__(self, expression_str)
+        result = super().__call__(expression_str)
 
         # This wrapper is here so additional sanity checks could be done
         # on the result of the eval, but currently none are done.

@@ -287,7 +287,7 @@ class Job(object):
         """
         kwargs = cls.kwargs_from_callable(handler)
         return cls(
-            set(handler.interval),
+            intervals=set(handler.interval),
             handler=handler,
             **kwargs)
 

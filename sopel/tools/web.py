@@ -21,23 +21,12 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import re
 import sys
-import urllib
+import urllib.parse
 
 from sopel import __version__
 
-if sys.version_info.major < 3:
-    from htmlentitydefs import name2codepoint
-    from urlparse import urlparse, urlunparse
-else:
-    from html.entities import name2codepoint
-    from urllib.parse import urlparse, urlunparse
-    unichr = chr
-    unicode = str
-
-try:
-    import html as HTMLLib
-except ImportError:
-    HTMLLib = None
+from html.entities import name2codepoint
+from html import unescape
 
 __all__ = [
     'USER_AGENT',
@@ -112,11 +101,11 @@ def entity(match):
     """
     value = match.group(1).lower()
     if value.startswith('#x'):
-        return unichr(int(value[2:], 16))
+        return chr(int(value[2:], 16))
     elif value.startswith('#'):
-        return unichr(int(value[1:]))
+        return chr(int(value[1:]))
     elif value in name2codepoint:
-        return unichr(name2codepoint[value])
+        return chr(name2codepoint[value])
     return '[' + value + ']'
 
 
@@ -126,17 +115,7 @@ def decode(html):
     :param str html: the HTML page or snippet to process
     :return str: ``html`` with all entity references replaced
     """
-    if HTMLLib is not None:
-        # Python's stdlib has our back in 3.4+
-        # TODO: This should be the only implementation in Sopel 8
-        try:
-            return HTMLLib.unescape(html)
-        except AttributeError:
-            # Must be py3.3; fall through to our half-assed version.
-            pass
-
-    # Not on py3.4+ yet? Then you get to deal with the jankiness.
-    return r_entity.sub(entity, html)
+    return unescape(html)
 
 
 # Identical to urllib2.quote
@@ -152,13 +131,7 @@ def quote(string, safe='/'):
         This is a shim to make writing cross-compatible plugins for both
         Python 2 and Python 3 easier.
     """
-    if sys.version_info.major < 3:
-        if isinstance(string, unicode):
-            string = string.encode('utf8')
-        string = urllib.quote(string, safe.encode('utf8'))
-    else:
-        string = urllib.parse.quote(str(string), safe)
-    return string
+    return urllib.parse.quote(str(string), safe)
 
 
 # six-like shim for Unicode safety
@@ -172,10 +145,7 @@ def unquote(string):
         This is a shim to make writing cross-compatible plugins for both
         Python 2 and Python 3 easier.
     """
-    if sys.version_info.major < 3:
-        return urllib.unquote(string.encode('utf-8')).decode('utf-8')
-    else:
-        return urllib.parse.unquote(string)
+    return urllib.parse.unquote(string)
 
 
 def quote_query(string):
@@ -184,7 +154,7 @@ def quote_query(string):
     :param str string: a URL containing query parameters
     :return str: the input URL with query parameter values URL-encoded
     """
-    parsed = urlparse(string)
+    parsed = urllib.parse.urlparse(string)
     string = string.replace(parsed.query, quote(parsed.query, "/=&"), 1)
     return string
 
@@ -193,30 +163,19 @@ def quote_query(string):
 
 def urlencode_non_ascii(b):
     """Safely encodes non-ASCII characters in a URL."""
-    regex = '[\x80-\xFF]'
-    if sys.version_info.major > 2:
-        regex = b'[\x80-\xFF]'
-    return re.sub(regex, lambda c: '%%%02x' % ord(c.group(0)), b)
+    return re.sub(b'[\x80-\xFF]', lambda c: '%%%02x' % ord(c.group(0)), b)
 
 
 def iri_to_uri(iri):
     """Decodes an internationalized domain name (IDN)."""
-    parts = urlparse(iri)
-    parts_seq = (part.encode('idna') if parti == 1 else urlencode_non_ascii(part.encode('utf-8')) for parti, part in enumerate(parts))
-    if sys.version_info.major > 2:
-        parts_seq = list(parts_seq)
+    parts = urllib.parse.urlparse(iri)
+    parts_seq = [part.encode('idna') if i == 1 else urlencode_non_ascii(part.encode('utf-8')) for i, part in enumerate(parts)]
 
-    parsed = urlunparse(parts_seq)
-    if sys.version_info.major > 2:
-        return parsed.decode()
-    else:
-        return parsed
+    parsed = urllib.parse.urlunparse(parts_seq)
+    return parsed.decode()
 
 
-if sys.version_info.major < 3:
-    urlencode = urllib.urlencode
-else:
-    urlencode = urllib.parse.urlencode
+urlencode = urllib.parse.urlencode
 
 
 # Functions for URL detection
