@@ -44,7 +44,6 @@ away from the rest of the application.
 # Licensed under the Eiffel Forum License 2.
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import imp
 import importlib
 import inspect
 import itertools
@@ -52,14 +51,6 @@ import os
 
 from sopel import loader
 from . import exceptions
-
-try:
-    reload = importlib.reload
-except AttributeError:
-    # py2: no reload function
-    # TODO: imp is deprecated, to be removed when py2 support is dropped
-    reload = imp.reload
-
 
 class AbstractPluginHandler(object):
     """Base class for plugin handlers.
@@ -301,7 +292,7 @@ class PyModulePlugin(AbstractPluginHandler):
 
         This method assumes the plugin is already loaded.
         """
-        self._module = reload(self._module)
+        self._module = importlib.reload(self._module)
 
     def is_loaded(self):
         return self._module is not None

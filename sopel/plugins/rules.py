@@ -32,17 +32,895 @@ from sopel.config.core_section import (
     COMMAND_DEFAULT_HELP_PREFIX, COMMAND_DEFAULT_PREFIX, URL_DEFAULT_SCHEMES)
 
 
+from urllib.parse import urlparse
+
+from inspect import getfullargspec as inspect_getargspec
+
+
+__all__ = [
+    'Manager',
+    'Rule',
+    'FindRule',
+    'SearchRule',
+    'Command',
+    'NickCommand',
+    'ActionCommand',
+    'URLCallback',
+]
+
+
+LOGGER = logging.getLogger(__name__)
+
+IGNORE_RATE_LIMIT = 1  # equivalent to sopel.plugin.NOLIMIT
+"""Return value used to indicate that rate-limiting should be ignored."""
+PRIORITY_HIGH = 'high'
+"""Highest rule priority."""
+PRIORITY_MEDIUM = 'medium'
+"""Medium rule priority."""
+PRIORITY_LOW = 'low'
+"""Lowest rule priority."""
+PRIORITY_SCALES = {
+    PRIORITY_HIGH: 0,
+    PRIORITY_MEDIUM: 100,
+    PRIORITY_LOW: 1000,
+}
+"""Mapping of priority label to priority scale."""
+
+# Can be implementation-dependent
+_regex_type = type(re.compile(''))
+
+
+def _clean_rules(rules, nick, aliases):
+    for pattern in rules:
+        if isinstance(pattern, _regex_type):
+            # already a compiled regex
+            yield pattern
+        else:
+            yield _compile_pattern(pattern, nick, aliases)
+
+
+def _compile_pattern(pattern, nick, aliases=None):
+    if aliases:
+        nicks = list(aliases)  # alias_nicks.copy() doesn't work in py2
+        nicks.append(nick)
+        nicks = map(re.escape, nicks)
+        nick = '(?:%s)' % '|'.join(nicks)
+    else:
+        nick = re.escape(nick)
+
+    pattern = pattern.replace('$nickname', nick)
+    pattern = pattern.replace('$nick ', r'{}[,:]\s*'.format(nick))  # @rule('$nick hi')
+    pattern = pattern.replace('$nick', r'{}[,:]\s+'.format(nick))  # @rule('$nickhi')
+    flags = re.IGNORECASE
+    if '\n' in pattern:
+        # See https://docs.python.org/3/library/re.html#re.VERBOSE
+        flags |= re.VERBOSE
+    return re.compile(pattern, flags)
+
+
+def _has_labeled_rule(registry, label, plugin=None):
+    rules = (
+        itertools.chain(*registry.values())
+        if plugin is None
+        else registry.get(plugin, [])
+    )
+    return any(rule.get_rule_label() == label for rule in rules)
+
+
+def _has_named_rule(registry, name, follow_alias=False, plugin=None):
+    rules = registry.values() if plugin is None else [registry.get(plugin, {})]
+
+    has_name = any(
+        (name in plugin_rules)
+        for plugin_rules in rules
+    )
+    aliases = (
+        rule.has_alias(name)
+        for plugin_rules in rules
+        for rule in plugin_rules.values()
+    )
+
+    return has_name or (follow_alias and any(aliases))
+
+
+def _clean_callable_examples(examples):
+    valid_keys = [
+        # message
+        'example',
+        'result',
+        # flags
+        'is_private_message',
+        'is_help',
+        'is_pattern',
+        'is_admin',
+        'is_owner',
+    ]
+
+    return tuple(
+        dict(
+            (key, value)
+            for key, value in example.items()
+            if key in valid_keys
+        )
+        for example in examples
+    )
+
+
+class Manager(object):
+    """Manager of plugin rules.
+
+    This manager stores plugin rules and can then provide the matching rules
+    for a given trigger.
+
+    To register a rule:
+
+    * :meth:`register` for generic rules
+    * :meth:`register_command` for named rules with a prefix
+    * :meth:`register_nick_command` for named rules based on nick calling
+    * :meth:`register_action_command` for named rules based on ``ACTION``
+    * :meth:`register_url_callback` for URL callback rules
+
+    Then to match the rules against a ``trigger``, see the
+    :meth:`get_triggered_rules`, which returns a list of ``(rule, match)``,
+    sorted by priorities (high first, medium second, and low last).
+    """
+    def __init__(self):
+        self._rules = tools.SopelMemoryWithDefault(list)
+        self._commands = tools.SopelMemoryWithDefault(dict)
+        self._nick_commands = tools.SopelMemoryWithDefault(dict)
+        self._action_commands = tools.SopelMemoryWithDefault(dict)
+        self._url_callbacks = tools.SopelMemoryWithDefault(list)
+        self._register_lock = threading.Lock()
+
+    def unregister_plugin(self, plugin_name):
+        """Unregister all the rules from a plugin.
+
+        :param str plugin_name: the name of the plugin to remove
+        :return: the number of rules unregistered for this plugin
+        :rtype: int
+
+        All rules, commands, nick commands, and action commands of that plugin
+        will be removed from the manager.
+        """
+        registries = [
+            self._rules,
+            self._commands,
+            self._nick_commands,
+            self._action_commands,
+            self._url_callbacks,
+        ]
+
+        unregistered_rules = 0
+        with self._register_lock:
+            for registry in registries:
+                rules_count = len(registry[plugin_name])
+                del registry[plugin_name]
+                unregistered_rules = unregistered_rules + rules_count
+
+        LOGGER.debug(
+            '[%s] Successfully unregistered %d rules',
+            plugin_name,
+            unregistered_rules)
+
+        return unregistered_rules
+
+    def register(self, rule):
+        """Register a plugin rule.
+
+        :param rule: the rule to register
+        :type rule: :class:`Rule`
+        """
+        with self._register_lock:
+            self._rules[rule.get_plugin_name()].append(rule)
+        LOGGER.debug('Rule registered: %s', str(rule))
+
+    def register_command(self, command):
+        """Register a plugin command.
+
+        :param command: the command to register
+        :type command: :class:`Command`
+        """
+        with self._register_lock:
+            plugin = command.get_plugin_name()
+            self._commands[plugin][command.name] = command
+        LOGGER.debug('Command registered: %s', str(command))
+
+    def register_nick_command(self, command):
+        """Register a plugin nick command.
+
+        :param command: the nick command to register
+        :type command: :class:`NickCommand`
+        """
+        with self._register_lock:
+            plugin = command.get_plugin_name()
+            self._nick_commands[plugin][command.name] = command
+        LOGGER.debug('Nick Command registered: %s', str(command))
+
+    def register_action_command(self, command):
+        """Register a plugin action command.
+
+        :param command: the action command to register
+        :type command: :class:`ActionCommand`
+        """
+        with self._register_lock:
+            plugin = command.get_plugin_name()
+            self._action_commands[plugin][command.name] = command
+        LOGGER.debug('Action Command registered: %s', str(command))
+
+    def register_url_callback(self, url_callback):
+        """Register a plugin URL callback.
+
+        :param url_callback: the URL callback to register
+        :type url_callback: :class:`URLCallback`
+        """
+        with self._register_lock:
+            plugin = url_callback.get_plugin_name()
+            self._url_callbacks[plugin].append(url_callback)
+        LOGGER.debug('URL callback registered: %s', str(url_callback))
+
+    def has_rule(self, label, plugin=None):
+        """Tell if the manager knows a rule with this ``label``.
+
+        :param str label: the label of the rule to look for
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the rule exists, ``False`` otherwise
+        :rtype: bool
+
+        The optional parameter ``plugin`` can be provided to limit the rules
+        to only those from that plugin.
+        """
+        return _has_labeled_rule(self._rules, label, plugin)
+
+    def has_command(self, name, follow_alias=True, plugin=None):
+        """Tell if the manager knows a command with this ``name``.
+
+        :param str label: the label of the rule to look for
+        :param bool follow_alias: optional flag to include aliases
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the command exists, ``False`` otherwise
+        :rtype: bool
+
+        By default, this method follows aliases to search commands. If the
+        optional parameter ``follow_alias`` is ``False``, then it won't find
+        commands by their aliases::
+
+            >>> command = Command('hi', prefix='"', aliases=['hey'])
+            >>> manager.register_command(command)
+            >>> manager.has_command('hi')
+            True
+            >>> manager.has_command('hey')
+            True
+            >>> manager.has_command('hey', follow_alias=False)
+            False
+
+        The optional parameter ``plugin`` can be provided to limit the commands
+        to the ones of said plugin.
+        """
+        return _has_named_rule(self._commands, name, follow_alias, plugin)
+
+    def has_nick_command(self, name, follow_alias=True, plugin=None):
+        """Tell if the manager knows a nick command with this ``name``.
+
+# coding=utf-8
+"""Sopel's plugin rules management.
+
+.. versionadded:: 7.1
+
+.. important::
+
+    This is all fresh and new. Its usage and documentation is for Sopel core
+    development and advanced developers. It is subject to rapid changes
+    between versions without much (or any) warning.
+
+    Do **not** build your plugin based on what is here, you do **not** need to.
+
+"""
+# Copyright 2020, Florian Strzelecki <florian.strzelecki@gmail.com>
+#
+# Licensed under the Eiffel Forum License 2.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+
+import datetime
+import functools
+import inspect
+import itertools
+import logging
+import re
+import threading
+
+
+from sopel import tools
+from sopel.config.core_section import (
+    COMMAND_DEFAULT_HELP_PREFIX, COMMAND_DEFAULT_PREFIX, URL_DEFAULT_SCHEMES)
+
+
+from urllib.parse import urlparse
+
+from inspect import getfullargspec as inspect_getargspec
+
+
+__all__ = [
+    'Manager',
+    'Rule',
+    'FindRule',
+    'SearchRule',
+    'Command',
+    'NickCommand',
+    'ActionCommand',
+    'URLCallback',
+]
+
+
+LOGGER = logging.getLogger(__name__)
+
+IGNORE_RATE_LIMIT = 1  # equivalent to sopel.plugin.NOLIMIT
+"""Return value used to indicate that rate-limiting should be ignored."""
+PRIORITY_HIGH = 'high'
+"""Highest rule priority."""
+PRIORITY_MEDIUM = 'medium'
+"""Medium rule priority."""
+PRIORITY_LOW = 'low'
+"""Lowest rule priority."""
+PRIORITY_SCALES = {
+    PRIORITY_HIGH: 0,
+    PRIORITY_MEDIUM: 100,
+    PRIORITY_LOW: 1000,
+}
+"""Mapping of priority label to priority scale."""
+
+# Can be implementation-dependent
+_regex_type = type(re.compile(''))
+
+
+def _clean_rules(rules, nick, aliases):
+    for pattern in rules:
+        if isinstance(pattern, _regex_type):
+            # already a compiled regex
+            yield pattern
+        else:
+            yield _compile_pattern(pattern, nick, aliases)
+
+
+def _compile_pattern(pattern, nick, aliases=None):
+    if aliases:
+        nicks = list(aliases)  # alias_nicks.copy() doesn't work in py2
+        nicks.append(nick)
+        nicks = map(re.escape, nicks)
+        nick = '(?:%s)' % '|'.join(nicks)
+    else:
+        nick = re.escape(nick)
+
+    pattern = pattern.replace('$nickname', nick)
+    pattern = pattern.replace('$nick ', r'{}[,:]\s*'.format(nick))  # @rule('$nick hi')
+    pattern = pattern.replace('$nick', r'{}[,:]\s+'.format(nick))  # @rule('$nickhi')
+    flags = re.IGNORECASE
+    if '\n' in pattern:
+        # See https://docs.python.org/3/library/re.html#re.VERBOSE
+        flags |= re.VERBOSE
+    return re.compile(pattern, flags)
+
+
+def _has_labeled_rule(registry, label, plugin=None):
+    rules = (
+        itertools.chain(*registry.values())
+        if plugin is None
+        else registry.get(plugin, [])
+    )
+    return any(rule.get_rule_label() == label for rule in rules)
+
+
+def _has_named_rule(registry, name, follow_alias=False, plugin=None):
+    rules = registry.values() if plugin is None else [registry.get(plugin, {})]
+
+    has_name = any(
+        (name in plugin_rules)
+        for plugin_rules in rules
+    )
+    aliases = (
+        rule.has_alias(name)
+        for plugin_rules in rules
+        for rule in plugin_rules.values()
+    )
+
+    return has_name or (follow_alias and any(aliases))
+
+
+def _clean_callable_examples(examples):
+    valid_keys = [
+        # message
+        'example',
+        'result',
+        # flags
+        'is_private_message',
+        'is_help',
+        'is_pattern',
+        'is_admin',
+        'is_owner',
+    ]
+
+    return tuple(
+        dict(
+            (key, value)
+            for key, value in example.items()
+            if key in valid_keys
+        )
+        for example in examples
+    )
+
+
+class Manager(object):
+    """Manager of plugin rules.
+
+    This manager stores plugin rules and can then provide the matching rules
+    for a given trigger.
+
+    To register a rule:
+
+    * :meth:`register` for generic rules
+    * :meth:`register_command` for named rules with a prefix
+    * :meth:`register_nick_command` for named rules based on nick calling
+    * :meth:`register_action_command` for named rules based on ``ACTION``
+    * :meth:`register_url_callback` for URL callback rules
+
+    Then to match the rules against a ``trigger``, see the
+    :meth:`get_triggered_rules`, which returns a list of ``(rule, match)``,
+    sorted by priorities (high first, medium second, and low last).
+    """
+    def __init__(self):
+        self._rules = tools.SopelMemoryWithDefault(list)
+        self._commands = tools.SopelMemoryWithDefault(dict)
+        self._nick_commands = tools.SopelMemoryWithDefault(dict)
+        self._action_commands = tools.SopelMemoryWithDefault(dict)
+        self._url_callbacks = tools.SopelMemoryWithDefault(list)
+        self._register_lock = threading.Lock()
+
+    def unregister_plugin(self, plugin_name):
+        """Unregister all the rules from a plugin.
+
+        :param str plugin_name: the name of the plugin to remove
+        :return: the number of rules unregistered for this plugin
+        :rtype: int
+
+        All rules, commands, nick commands, and action commands of that plugin
+        will be removed from the manager.
+        """
+        registries = [
+            self._rules,
+            self._commands,
+            self._nick_commands,
+            self._action_commands,
+            self._url_callbacks,
+        ]
+
+        unregistered_rules = 0
+        with self._register_lock:
+            for registry in registries:
+                rules_count = len(registry[plugin_name])
+                del registry[plugin_name]
+                unregistered_rules = unregistered_rules + rules_count
+
+        LOGGER.debug(
+            '[%s] Successfully unregistered %d rules',
+            plugin_name,
+            unregistered_rules)
+
+        return unregistered_rules
+
+    def register(self, rule):
+        """Register a plugin rule.
+
+        :param rule: the rule to register
+        :type rule: :class:`Rule`
+        """
+        with self._register_lock:
+            self._rules[rule.get_plugin_name()].append(rule)
+        LOGGER.debug('Rule registered: %s', str(rule))
+
+    def register_command(self, command):
+        """Register a plugin command.
+
+        :param command: the command to register
+        :type command: :class:`Command`
+        """
+        with self._register_lock:
+            plugin = command.get_plugin_name()
+            self._commands[plugin][command.name] = command
+        LOGGER.debug('Command registered: %s', str(command))
+
+    def register_nick_command(self, command):
+        """Register a plugin nick command.
+
+        :param command: the nick command to register
+        :type command: :class:`NickCommand`
+        """
+        with self._register_lock:
+            plugin = command.get_plugin_name()
+            self._nick_commands[plugin][command.name] = command
+        LOGGER.debug('Nick Command registered: %s', str(command))
+
+    def register_action_command(self, command):
+        """Register a plugin action command.
+
+        :param command: the action command to register
+        :type command: :class:`ActionCommand`
+        """
+        with self._register_lock:
+            plugin = command.get_plugin_name()
+            self._action_commands[plugin][command.name] = command
+        LOGGER.debug('Action Command registered: %s', str(command))
+
+    def register_url_callback(self, url_callback):
+        """Register a plugin URL callback.
+
+        :param url_callback: the URL callback to register
+        :type url_callback: :class:`URLCallback`
+        """
+        with self._register_lock:
+            plugin = url_callback.get_plugin_name()
+            self._url_callbacks[plugin].append(url_callback)
+        LOGGER.debug('URL callback registered: %s', str(url_callback))
+
+    def has_rule(self, label, plugin=None):
+        """Tell if the manager knows a rule with this ``label``.
+
+        :param str label: the label of the rule to look for
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the rule exists, ``False`` otherwise
+        :rtype: bool
+
+        The optional parameter ``plugin`` can be provided to limit the rules
+        to only those from that plugin.
+        """
+        return _has_labeled_rule(self._rules, label, plugin)
+
+    def has_command(self, name, follow_alias=True, plugin=None):
+        """Tell if the manager knows a command with this ``name``.
+
+        :param str label: the label of the rule to look for
+        :param bool follow_alias: optional flag to include aliases
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the command exists, ``False`` otherwise
+        :rtype: bool
+
+        By default, this method follows aliases to search commands. If the
+        optional parameter ``follow_alias`` is ``False``, then it won't find
+        commands by their aliases::
+
+            >>> command = Command('hi', prefix='"', aliases=['hey'])
+            >>> manager.register_command(command)
+            >>> manager.has_command('hi')
+            True
+            >>> manager.has_command('hey')
+            True
+            >>> manager.has_command('hey', follow_alias=False)
+            False
+
+        The optional parameter ``plugin`` can be provided to limit the commands
+        to the ones of said plugin.
+        """
+        return _has_named_rule(self._commands, name, follow_alias, plugin)
+
+    def has_nick_command(self, name, follow_alias=True, plugin=None):
+        """Tell if the manager knows a nick command with this ``name``.
+
+        :param str label: the label of the rule to look for
+        :param bool follow_alias: optional flag to include aliases
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the command exists, ``False`` otherwise
+        :rtype: bool
+
+        This method works like :meth:`has_command`, but with nick commands.
+        """
+        return _has_named_rule(self._nick_commands, name, follow_alias, plugin)
+
+    def has_action_command(self, name, follow_alias=True, plugin=None):
+        """Tell if the manager knows an action command with this ``name``.
+
+        :param str label: the label of the rule to look for
+        :param bool follow_alias: optional flag to include aliases
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the command exists, ``False`` otherwise
+        :rtype: bool
+
+        This method works like :meth:`has_command`, but with action commands.
+        """
+        return _has_named_rule(
+            self._action_commands, name, follow_alias, plugin)
+
+    def has_url_callback(self, label, plugin=None):
+        """Tell if the manager knows a URL callback with this ``label``.
+
+        :param str label: the label of the URL callback to look for
+        :param str plugin: optional filter on the plugin name
+        :return: ``True`` if the URL callback exists, ``False`` otherwise
+        :rtype: bool
+
+        The optional parameter ``plugin`` can be provided to limit the URL
+        callbacks to only those from that plugin.
+        """
+        return _has_labeled_rule(self._url_callbacks, label, plugin)
+
+    def get_all_commands(self):
+        """Retrieve all the registered commands, by plugin.
+
+        :return: a list of 2-value tuples as ``(key, value)``, where each key
+                 is a plugin name, and the value is a ``dict`` of its
+                 :term:`commands <Command>`
+        """
+        # expose a copy of the registered commands
+        return self._commands.items()
+
+    def get_all_nick_commands(self):
+        """Retrieve all the registered nick commands, by plugin.
+
+        :return: a list of 2-value tuples as ``(key, value)``, where each key
+                 is a plugin name, and the value is a ``dict`` of its
+                 :term:`nick commands <Nick command>`
+        """
+        # expose a copy of the registered commands
+        return self._nick_commands.items()
+
+    def get_all_action_commands(self):
+        """Retrieve all the registered action commands, by plugin.
+
+        :return: a list of 2-value tuples as ``(key, value)``, where each key
+                 is a plugin name, and the value is a ``dict`` of its
+                 :term:`action commands <Action command>`
+        """
+        # expose a copy of the registered action commands
+        return self._action_commands.items()
+
+    def get_all_generic_rules(self):
+        """Retrieve all the registered generic rules, by plugin.
+
+        :return: a list of 2-value tuples as ``(key, value)``, where each key
+                 is a plugin name, and the value is a ``list`` of its
+                 :term:`generic rules <Generic rule>`
+        """
+        # expose a copy of the registered generic rules
+        return self._rules.items()
+
+    def get_all_url_callbacks(self):
+        """Retrieve all the registered URL callbacks, by plugin.
+
+        :return: a list of 2-value tuples as ``(key, value)``, where each key
+                 is a plugin name, and the value is a ``list`` of its
+                 :term:`URL callbacks <URL callback>`
+        """
+        # expose a copy of the registered generic rules
+        return self._url_callbacks.items()
+
+    def get_triggered_rules(self, bot, pretrigger):
+        """Get triggered rules with their match objects, sorted by priorities.
+
+        :param bot: Sopel instance
+        :type bot: :class:`sopel.bot.Sopel`
+        :param pretrigger: IRC line
+        :type pretrigger: :class:`sopel.trigger.PreTrigger`
+        :return: a tuple of ``(rule, match)``, sorted by priorities
+        :rtype: tuple
+        """
+        generic_rules = self._rules.values()
+        command_rules = (
+            rules_dict.values()
+            for rules_dict in self._commands.values())
+        nick_rules = (
+            rules_dict.values()
+            for rules_dict in self._nick_commands.values())
+        action_rules = (
+            rules_dict.values()
+            for rules_dict in self._action_commands.values())
+        url_callback_rules = self._url_callbacks.values()
+
+        rules = itertools.chain(
+            itertools.chain(*generic_rules),
+            itertools.chain(*command_rules),
+            itertools.chain(*nick_rules),
+            itertools.chain(*action_rules),
+            itertools.chain(*url_callback_rules),
+        )
+        matches = (
+            (rule, match)
+            for rule in rules
+            for match in rule.match(bot, pretrigger)
+        )
+        # Returning a tuple instead of a sorted object ensures that:
+        #   1. it's not a lazy object
+        #   2. it's an immutable iterable
+        # We can't accept lazy evaluation or yield results; it has to be a
+        # static list of (rule/match), otherwise Python will raise an error
+        # if any rule execution tries to alter the list of registered rules.
+        # Making it immutable is the cherry on top.
+        return tuple(sorted(matches, key=lambda x: x[0].priority_scale))
+
+    def check_url_callback(self, bot, url):
+        """Tell if the ``url`` matches any of the registered URL callbacks.
+
+        :param bot: Sopel instance
+        :type bot: :class:`sopel.bot.Sopel`
+        :param str url: URL to check
+        :return: ``True`` when ``url`` matches any URL callbacks,
+                 ``False`` otherwise
+        :rtype: bool
+        """
+        return any(
+            any(rule.parse(url))
+            for plugin_rules in self._url_callbacks.values()
+            for rule in plugin_rules
+        )
+
+
+class AbstractRule(object):
+    """Abstract definition of a plugin's rule.
+
+    Any rule class must be an implementation of this abstract class, as it
+    defines the Rule interface:
+
+    * plugin name
+    * priority
+    * label
+    * doc, usages, and tests
+    * output prefix
+    * matching patterns, events, and intents
+    * allow echo-message
+    * threaded execution or not
+    * rate limiting feature
+    * text parsing
+    * and finally, trigger execution (i.e. actually doing something)
+
+    """
+    @classmethod
+    def from_callable(cls, settings, handler):
+        """Instantiate a rule object from ``settings`` and ``handler``.
+
+        :param settings: Sopel's settings
+        :type settings: :class:`sopel.config.Config`
+        :param callable handler: a function-based rule handler
+        :return: an instance of this class created from the ``handler``
+        :rtype: :class:`AbstractRule`
+
+        Sopel's function-based rule handlers are simple callables, decorated
+        with :mod:`sopel.plugin`'s decorators to add attributes, such as rate
+        limit, threaded execution, output prefix, priority, and so on. In order
+        to load these functions as rule objects, this class method can be used;
+        it takes the bot's ``settings`` and a cleaned ``handler``.
+
+        A "cleaned handler" is a function, decorated appropriately, and passed
+        through the filter of the
+        :func:`loader's clean<sopel.loader.clean_callable>` function.
+        """
+        raise NotImplementedError
+
+    @property
+    def priority_scale(self):
+        """Rule's priority on a numeric scale.
+
+        This attribute can be used to sort rules between each other, the
+        highest priority rules coming first. The default priority for a rule
+        is "medium".
+        """
+        priority_key = self.get_priority()
+
+        return (
+            PRIORITY_SCALES.get(priority_key) or
+            PRIORITY_SCALES[PRIORITY_MEDIUM]
+        )
+
+    def get_plugin_name(self):
+        """Get the rule's plugin name.
+
+        :rtype: str
+
+        The rule's plugin name will be used in various places to select,
+        register, unregister, and manipulate the rule based on its plugin,
+        which is referenced by its name.
+        """
+        raise NotImplementedError
+
+    def get_rule_label(self):
+        """Get the rule's label.
+
+        :rtype: str
+
+        A rule can have a label, which can identify the rule by string, the
+        same way a plugin can be identified by its name. This label can be used
+        to select, register, unregister, and manipulate the rule based on its
+        own label. Note that the label has no effect on the rule's execution.
+        """
+        raise NotImplementedError
+
+    def get_usages(self):
+        """Get the rule's usage examples.
+
+        :rtype: tuple
+
+        A rule can have usage examples, i.e. a list of examples showing how
+        the rule can be used, or in what context it can be triggered.
+        """
+        raise NotImplementedError
+
+    def get_test_parameters(self):
+        """Get parameters for automated tests.
+
+        :rtype: tuple
+
+        A rule can have automated tests attached to it, and this method must
+        return the test parameters:
+
+        * the expected IRC line
+        * the expected line of results, as said by the bot
+        * if the user should be an admin or not
+        * if the results should be used as regex pattern
+
+        .. seealso::
+
+            :meth:`sopel.plugin.example` for more about test parameters.
+
+        """
+        raise NotImplementedError
+
+    def get_doc(self):
+        """Get the rule's documentation.
+
+        :rtype: str
+
+        A rule's documentation is a short text that can be displayed to a user
+        on IRC upon asking for help about this rule. The equivalent of Python
+        docstrings, but for IRC rules.
+        """
+        raise NotImplementedError
+
+    def get_priority(self):
+        """Get the rule's priority.
+
+        :rtype: str
+
+# coding=utf-8
+"""Sopel's plugin rules management.
+
+.. versionadded:: 7.1
+
+.. important::
+
+    This is all fresh and new. Its usage and documentation is for Sopel core
+    development and advanced developers. It is subject to rapid changes
+    between versions without much (or any) warning.
+
+    Do **not** build your plugin based on what is here, you do **not** need to.
+
+"""
+# Copyright 2020, Florian Strzelecki <florian.strzelecki@gmail.com>
+#
+# Licensed under the Eiffel Forum License 2.
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+
+import datetime
+import functools
+import inspect
+import itertools
+import logging
+import re
+import threading
+
+
+from sopel import tools
+from sopel.config.core_section import (
+    COMMAND_DEFAULT_HELP_PREFIX, COMMAND_DEFAULT_PREFIX, URL_DEFAULT_SCHEMES)
+
+
 try:
     from urllib.parse import urlparse
 except ImportError:
     # TODO: remove when dropping Python 2.7
-    from urlparse import urlparse
+    from urllib.parse import urlparse
 
 try:
     from inspect import getfullargspec as inspect_getargspec
 except ImportError:
     # TODO: remove when dropping Python 2.7
-    from inspect import getargspec as inspect_getargspec
+    from inspect import getfullargspec as inspect_getargspec
 
 
 __all__ = [
@@ -693,7 +1571,7 @@ class AbstractRule(object):
 
         :param str text: text to parse by the rule
         :return: yield a list of match object
-        :rtype: generator of `re.match`__
+        :rtype: generator of `re.Match`__
 
         .. __: https://docs.python.org/3.6/library/re.html#match-objects
         """
@@ -1122,7 +2000,6 @@ class NamedRuleMixin(object):
             # we assume the user knows what they are doing
             try:
                 # make sure it compiles properly
-                # (nobody knows what they are doing)
                 re.compile(name)
             except re.error as error:
                 original_name = name
@@ -1193,13 +2070,15 @@ class Command(NamedRuleMixin, Rule):
 
         return cls(**kwargs)
 
-    def __init__(self,
-                 name,
-                 prefix=COMMAND_DEFAULT_PREFIX,
-                 help_prefix=COMMAND_DEFAULT_HELP_PREFIX,
-                 aliases=None,
-                 **kwargs):
-        super(Command, self).__init__([], **kwargs)
+    def __init__(
+        self,
+        name,
+        prefix=COMMAND_DEFAULT_PREFIX,
+        help_prefix=COMMAND_DEFAULT_HELP_PREFIX,
+        aliases=None,
+        **kwargs
+    ):
+        super().__init__([], **kwargs)
         self._name = name
         self._prefix = prefix
         self._help_prefix = help_prefix
@@ -1208,30 +2087,31 @@ class Command(NamedRuleMixin, Rule):
 
     def __str__(self):
         label = self.get_rule_label()
-        plugin = self.get_plugin_name() or '(no-plugin)'
-        aliases = '|'.join(self._aliases)
+        plugin = self.get_plugin_name() or "(no-plugin)"
+        aliases = "|".join(self._aliases)
 
-        return '<Command %s.%s [%s]>' % (plugin, label, aliases)
+        return f"<Command {plugin}.{label} [{aliases}]>"
 
     def get_usages(self):
         usages = []
 
         for usage in self._usages:
-            text = usage.get('example')
+            text = usage.get("example")
             if not text:
                 continue
 
             if text[0] != self._help_prefix:
                 text = text.replace(
-                    COMMAND_DEFAULT_HELP_PREFIX, self._help_prefix, 1)
+                    COMMAND_DEFAULT_HELP_PREFIX, self._help_prefix, 1
+                )
 
             new_usage = {
-                'text': text,
-                'result': usage.get('result', None),
-                'is_pattern': bool(usage.get('is_pattern')),
-                'is_admin': bool(usage.get('is_admin')),
-                'is_owner': bool(usage.get('is_owner')),
-                'is_private_message': bool(usage.get('is_private_message')),
+                "text": text,
+                "result": usage.get("result", None),
+                "is_pattern": bool(usage.get("is_pattern")),
+                "is_admin": bool(usage.get("is_admin")),
+                "is_owner": bool(usage.get("is_owner")),
+                "is_private_message": bool(usage.get("is_private_message")),
             }
             usages.append(new_usage)
 
@@ -1252,7 +2132,7 @@ class Command(NamedRuleMixin, Rule):
         """
         name = [self.escape_name(self._name)]
         aliases = [self.escape_name(alias) for alias in self._aliases]
-        pattern = r'|'.join(name + aliases)
+        pattern = r"|".join(name + aliases)
 
         # Escape all whitespace with a single backslash.
         # This ensures that regexp in the prefix is treated as it was before
@@ -1284,6 +2164,7 @@ class NickCommand(NamedRuleMixin, Rule):
 
     Apart from that, it behaves exactly like a :class:`generic rule <Rule>`.
     """
+
     PATTERN_TEMPLATE = r"""
         ^
         $nickname[:,]? # Nickname.
@@ -1304,58 +2185,59 @@ class NickCommand(NamedRuleMixin, Rule):
     def from_callable(cls, settings, handler):
         nick = settings.core.nick
         nick_aliases = tuple(settings.core.alias_nicks)
-        commands = getattr(handler, 'nickname_commands', [])
+        commands = getattr(handler, "nickname_commands", [])
         if not commands:
-            raise RuntimeError('Invalid nick command callable: %s' % handler)
+            raise RuntimeError("Invalid nick command callable: %s" % handler)
 
         name = commands[0]
         aliases = commands[1:]
         kwargs = cls.kwargs_from_callable(handler)
-        kwargs.update({
-            'nick': nick,
-            'name': name,
-            'nick_aliases': nick_aliases,
-            'aliases': aliases,
-            'handler': handler,
-        })
+        kwargs.update(
+            {
+                "nick": nick,
+                "name": name,
+                "nick_aliases": nick_aliases,
+                "aliases": aliases,
+                "handler": handler,
+            }
+        )
 
         return cls(**kwargs)
 
     def __init__(self, nick, name, nick_aliases=None, aliases=None, **kwargs):
-        super(NickCommand, self).__init__([], **kwargs)
+        super().__init__([], **kwargs)
         self._nick = nick
         self._name = name
-        self._nick_aliases = (tuple(nick_aliases)
-                              if nick_aliases is not None
-                              else tuple())
+        self._nick_aliases = (
+            tuple(nick_aliases) if nick_aliases is not None else tuple()
+        )
         self._aliases = tuple(aliases) if aliases is not None else tuple()
         self._regexes = (self.get_rule_regex(),)
 
     def __str__(self):
         label = self.get_rule_label()
-        plugin = self.get_plugin_name() or '(no-plugin)'
-        aliases = '|'.join(self._aliases)
+        plugin = self.get_plugin_name() or "(no-plugin)"
+        aliases = "|".join(self._aliases)
         nick = self._nick
-        nick_aliases = '|'.join(self._nick_aliases)
+        nick_aliases = "|".join(self._nick_aliases)
 
-        return '<NickCommand %s.%s [%s] (%s [%s])>' % (
-            plugin, label, aliases, nick, nick_aliases)
+        return f"<NickCommand {plugin}.{label} [{aliases}] ({nick} [{nick_aliases}])>"
 
     def get_usages(self):
         usages = []
 
         for usage in self._usages:
-            text = usage.get('example')
+            text = usage.get("example")
             if not text:
                 continue
 
             new_usage = {
-                'text': text.replace('$nickname', self._nick),
-                'result': usage.get('result', None),
-                'is_pattern': bool(usage.get('is_pattern')),
-                'is_admin': bool(usage.get('is_admin')),
-                'is_owner': bool(usage.get('is_owner')),
-                'is_private_message': bool(usage.get('is_private_message')),
+                "text": text.replace("$nickname", self._nick),
+                "result": usage.get("result", None),
+                "is_pattern": bool(usage.get("is_pattern")),
+                "is_admin": bool(usage.get("is_admin")),
+                "is_owner": bool(usage.get("is_owner")),
+                "is_private_message": bool(usage.get("is_private_message")),
             }
             usages.append(new_usage)
 
@@ -1376,12 +2258,13 @@ class NickCommand(NamedRuleMixin, Rule):
         """
         name = [self.escape_name(self._name)]
         aliases = [self.escape_name(alias) for alias in self._aliases]
-        pattern = r'|'.join(name + aliases)
+        pattern = r"|".join(name + aliases)
 
         return _compile_pattern(
             self.PATTERN_TEMPLATE.format(command=pattern),
             self._nick,
-            self._nick_aliases)
+            self._nick_aliases,
+        )
 
 
 class ActionCommand(NamedRuleMixin, Rule):
@@ -1402,7 +2285,8 @@ class ActionCommand(NamedRuleMixin, Rule):
 
     Apart from that, it behaves exactly like a :class:`generic rule <Rule>`.
     """
-    INTENT_REGEX = re.compile(r'ACTION', re.IGNORECASE)
+
+    INTENT_REGEX = re.compile(r"ACTION", re.IGNORECASE)
     PATTERN_TEMPLATE = r"""
         ({command})         # Command as group 1.
         (?:\s+              # Whitespace to end command.
@@ -1421,33 +2305,35 @@ class ActionCommand(NamedRuleMixin, Rule):
 
     @classmethod
     def from_callable(cls, settings, handler):
-        commands = getattr(handler, 'action_commands', [])
+        commands = getattr(handler, "action_commands", [])
         if not commands:
-            raise RuntimeError('Invalid action command callable: %s' % handler)
+            raise RuntimeError("Invalid action command callable: %s" % handler)
 
         name = commands[0]
         aliases = commands[1:]
         kwargs = cls.kwargs_from_callable(handler)
-        kwargs.update({
-            'name': name,
-            'aliases': aliases,
-            'handler': handler,
-        })
+        kwargs.update(
+            {
+                "name": name,
+                "aliases": aliases,
+                "handler": handler,
+            }
+        )
 
         return cls(**kwargs)
 
     def __init__(self, name, aliases=None, **kwargs):
-        super(ActionCommand, self).__init__([], **kwargs)
+        super().__init__([], **kwargs)
         self._name = name
         self._aliases = tuple(aliases) if aliases is not None else tuple()
         self._regexes = (self.get_rule_regex(),)
 
     def __str__(self):
         label = self.get_rule_label()
-        plugin = self.get_plugin_name() or '(no-plugin)'
-        aliases = '|'.join(self._aliases)
+        plugin = self.get_plugin_name() or "(no-plugin)"
+        aliases = "|".join(self._aliases)
 
-        return '<ActionCommand %s.%s [%s]>' % (plugin, label, aliases)
+        return f"<ActionCommand {plugin}.{label} [{aliases}]>"
 
     def get_rule_regex(self):
         """Make the rule regex for this action command.
@@ -1463,7 +2349,7 @@ class ActionCommand(NamedRuleMixin, Rule):
         """
         name = [self.escape_name(self._name)]
         aliases = [self.escape_name(alias) for alias in self._aliases]
-        pattern = r'|'.join(name + aliases)
+        pattern = r"|".join(name + aliases)
         pattern = self.PATTERN_TEMPLATE.format(command=pattern)
         return re.compile(pattern, re.IGNORECASE | re.VERBOSE)
 
