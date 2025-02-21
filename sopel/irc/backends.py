@@ -6,10 +6,8 @@
 # documentation at http://www.irchelp.org/irchelp/rfc/
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import asynchat
-import asyncore
+import asyncio
 import datetime
-import errno
 import logging
 import os
 import socket
@@ -43,7 +41,7 @@ LOGGER = logging.getLogger(__name__)
 
 @plugin.thread(False)
 @plugin.interval(5)
-def _send_ping(backend):
+async def _send_ping(backend):
     if not backend.is_connected():
         return
 
@@ -75,7 +73,7 @@ def _send_ping(backend):
 
 @plugin.thread(False)
 @plugin.interval(10)
-def _check_timeout(backend):
+async def _check_timeout(backend):
     if not backend.is_connected():
         return
     dt = datetime.datetime.utcnow() - backend.last_event_at
@@ -90,8 +88,8 @@ def _check_timeout(backend):
         backend.handle_close()
 
 
-class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
-    """IRC backend implementation using :mod:`asynchat` (:mod:`asyncore`).
+class AsynchatBackend(AbstractIRCBackend):
+    """IRC backend implementation using :mod:`asyncio`.
 
     :param bot: a Sopel instance
     :type bot: :class:`sopel.bot.Sopel`
@@ -104,9 +102,7 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
     """
     def __init__(self, bot, server_timeout=None, ping_interval=None, **kwargs):
         AbstractIRCBackend.__init__(self, bot)
-        asynchat.async_chat.__init__(self)
         self.writing_lock = threading.RLock()
-        self.set_terminator(b'\n')
         self.buffer = ''
         self.server_timeout = server_timeout or 120
         self.ping_interval = ping_interval or (self.server_timeout * 0.45)
@@ -116,6 +112,9 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         self.port = None
         self.source_address = None
         self.timeout_scheduler = jobs.Scheduler(self)
+        self.transport = None  # asyncio.Transport
+        self.protocol = None  # asyncio.Protocol
+        self._connected = False
 
         # register timeout jobs
         self.register_timeout_jobs([
@@ -124,7 +123,7 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         ])
 
     def is_connected(self):
-        return self.connected
+        return self._connected
 
     def on_irc_error(self, pretrigger):
         if self.bot.hasquit:
@@ -143,12 +142,16 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         directly. This method is thread-safe.
         """
         with self.writing_lock:
-            self.send(data)
+            if self.transport:
+                self.transport.write(data)
+            else:
+                LOGGER.warning("Attempted to send data without a transport.")
 
-    def run_forever(self):
+    async def run_forever(self):
         """Run forever."""
         LOGGER.debug('Running forever.')
-        asyncore.loop()
+        # asyncio.run(self._async_main())  # moved to main bot
+        pass
 
     def register_timeout_jobs(self, handlers):
         """Register the timeout handlers for the timeout scheduler."""
@@ -158,7 +161,7 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
             self.timeout_scheduler.register(job)
             LOGGER.debug('Timeout Job registered: %s', str(job))
 
-    def initiate_connect(self, host, port, source_address):
+    async def initiate_connect(self, host, port, source_address):
         """Initiate IRC connection.
 
         :param str host: IRC server hostname
@@ -171,14 +174,26 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         self.source_address = source_address
 
         LOGGER.info('Connecting to %s:%s...', host, port)
+        loop = asyncio.get_event_loop()
+
         try:
-            LOGGER.debug('Set socket')
-            self.set_socket(socket.create_connection((host, port),
-                            source_address=source_address))
             LOGGER.debug('Connection attempt')
-            self.connect((host, port))
+            # create_connection returns (transport, protocol)
+            transport, protocol = await loop.create_connection(
+                lambda: IRCProtocol(self),
+                host,
+                port,
+                local_addr=source_address
+            )
+            self.transport = transport
+            self.protocol = protocol
+            self._connected = True
+
         except socket.error as e:
             LOGGER.exception('Connection error: %s', e)
+            self.handle_close()
+        except Exception as e:
+            LOGGER.exception('General connection error: %s', e)
             self.handle_close()
 
     def handle_connect(self):
@@ -192,7 +207,10 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         LOGGER.debug('Stopping timeout watchdog')
         self.timeout_scheduler.stop()
         LOGGER.info('Closing connection')
-        self.close()
+        if self.transport:
+            self.transport.close()
+            self.transport = None
+        self._connected = False
         self.bot.on_close()
 
     def handle_error(self):
@@ -250,6 +268,23 @@ class AsynchatBackend(AbstractIRCBackend, asynchat.async_chat):
         LOGGER.exception('Error with the timeout scheduler: %s', exc)
         self.handle_close()
 
+    def data_received(self, data):
+        """Handle incoming data from the transport."""
+        self.collect_incoming_data(data)
+        while '\n' in self.buffer:
+            line, self.buffer = self.buffer.split('\n', 1)
+            self.found_terminator()
+
+    # Define connection_made/lost to satisfy the protocol
+    def connection_made(self, transport):
+        """Called when a connection is made."""
+        self.transport = transport
+        self.handle_connect()
+
+    def connection_lost(self, exc):
+        """Called when the connection is lost or closed."""
+        self.handle_close()
+
 
 class SSLAsynchatBackend(AsynchatBackend):
     """SSL-aware extension of :class:`AsynchatBackend`.
@@ -267,6 +302,66 @@ class SSLAsynchatBackend(AsynchatBackend):
         self.ssl = None
         self.ca_certs = ca_certs
 
+    async def initiate_connect(self, host, port, source_address):
+        """Initiate IRC connection with SSL.
+
+        :param str host: IRC server hostname
+        :param int port: IRC server port
+        :param str source_address: the source address from which to initiate
+                                   the connection attempt
+        """
+        self.host = host
+        self.port = port
+        self.source_address = source_address
+
+        LOGGER.info('Connecting to %s:%s with SSL...', host, port)
+        loop = asyncio.get_event_loop()
+
+        ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=self.ca_certs)
+        if self.verify_ssl:
+            ssl_context.check_hostname = True
+        else:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        try:
+            LOGGER.debug('Connection attempt')
+            transport, protocol = await loop.create_connection(
+                lambda: IRCProtocol(self),
+                host,
+                port,
+                ssl=ssl_context,
+                local_addr=source_address
+            )
+            self.transport = transport
+            self.protocol = protocol
+            self._connected = True
+
+        except socket.error as e:
+            LOGGER.exception('Connection error: %s', e)
+            self.handle_close()
+        except Exception as e:
+            LOGGER.exception('General connection error: %s', e)
+            self.handle_close()
+
+
+class IRCProtocol(asyncio.Protocol):
+    """Asyncio protocol for handling IRC communication."""
+    def __init__(self, backend):
+        self.backend = backend
+
+    def connection_made(self, transport):
+        """Called when a connection is made."""
+        self.backend.connection_made(transport)
+
+    def data_received(self, data):
+        """Called when data is received."""
+        self.backend.data_received(data)
+
+    def connection_lost(self, exc):
+        """Called when the connection is lost or closed."""
+        self.backend.connection_lost(exc)
+
     def handle_connect(self):
         """Handle potential TLS connection."""
         # TODO: Refactor to use SSLContext and an appropriate PROTOCOL_* constant
@@ -276,43 +371,51 @@ class SSLAsynchatBackend(AsynchatBackend):
         # the supported range should narrow sufficiently to fix these for real.
         # Each Python version still generally selects the most secure protocol
         # version(s) it supports.
-        if not self.verify_ssl:
-            self.ssl = ssl.wrap_socket(self.socket,  # lgtm [py/insecure-default-protocol]
-                                       do_handshake_on_connect=True,
-                                       suppress_ragged_eofs=True)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if self.verify_ssl:
+            context.verify_mode = ssl.CERT_REQUIRED
+            if self.ca_certs:
+                context.load_verify_locations(self.ca_certs)
+            context.check_hostname = True
         else:
-            self.ssl = ssl.wrap_socket(self.socket,  # lgtm [py/insecure-default-protocol]
-                                       do_handshake_on_connect=True,
-                                       suppress_ragged_eofs=True,
-                                       cert_reqs=ssl.CERT_REQUIRED,
-                                       ca_certs=self.ca_certs)
-            # connect to host specified in config first
-            try:
-                ssl.match_hostname(self.ssl.getpeercert(), self.host)
-            except ssl.CertificateError:
-                # the host in config and certificate don't match
-                LOGGER.error("hostname mismatch between configuration and certificate")
-                # check (via exception) if a CNAME matches as a fallback
-                has_matched = False
-                for hostname in get_cnames(self.host):
-                    try:
-                        ssl.match_hostname(self.ssl.getpeercert(), hostname)
-                        LOGGER.warning(
-                            "using {0} instead of {1} for TLS connection"
-                            .format(hostname, self.host))
-                        has_matched = True
-                        break
-                    except ssl.CertificateError:
-                        pass
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
 
-                if not has_matched:
-                    # everything is broken
-                    LOGGER.error("Invalid certificate, no hostname matches.")
-                    # TODO: refactor access to bot's settings
-                    if hasattr(self.bot.settings.core, 'pid_file_path'):
-                        # TODO: refactor to quit properly (no "os._exit")
-                        os.unlink(self.bot.settings.core.pid_file_path)
-                        os._exit(1)
+        try:
+            self.ssl = context.wrap_socket(self.socket,
+                                           server_hostname=self.host)
+            # connect to host specified in config first
+            if self.verify_ssl:
+                try:
+                    ssl.match_hostname(self.ssl.getpeercert(), self.host)
+                except ssl.CertificateError:
+                    # the host in config and certificate don't match
+                    LOGGER.error("hostname mismatch between configuration and certificate")
+                    # check (via exception) if a CNAME matches as a fallback
+                    has_matched = False
+                    for hostname in get_cnames(self.host):
+                        try:
+                            ssl.match_hostname(self.ssl.getpeercert(), hostname)
+                            LOGGER.warning(
+                                "using {0} instead of {1} for TLS connection"
+                                .format(hostname, self.host))
+                            has_matched = True
+                            break
+                        except ssl.CertificateError:
+                            pass
+
+                    if not has_matched:
+                        # everything is broken
+                        LOGGER.error("Invalid certificate, no hostname matches.")
+                        # TODO: refactor access to bot's settings
+                        if hasattr(self.bot.settings.core, 'pid_file_path'):
+                            # TODO: refactor to quit properly (no "os._exit")
+                            os.unlink(self.bot.settings.core.pid_file_path)
+                            os._exit(1)
+        except OSError as e:
+            LOGGER.exception('SSL handshake failed')
+            self.handle_close()
+            return
         self.set_socket(self.ssl)
         LOGGER.info('Connection accepted by the server...')
         LOGGER.debug('Starting job scheduler for connection timeout...')
@@ -325,7 +428,7 @@ class SSLAsynchatBackend(AsynchatBackend):
             result = self.socket.send(data)
             return result
         except ssl.SSLError as why:
-            if why[0] in (asyncore.EWOULDBLOCK, errno.ESRCH):
+            if why.errno in (asyncore.EWOULDBLOCK, errno.ESRCH):
                 return 0
             raise why
 
@@ -336,17 +439,17 @@ class SSLAsynchatBackend(AsynchatBackend):
         https://k7fos.com/2010/09/ssl-support-in-asynchatasync_chat
         """
         try:
-            data = self.socket.read(buffer_size)
+            data = self.socket.recv(buffer_size)
             if not data:
                 self.handle_close()
                 return b''
             return data
         except ssl.SSLError as why:
-            if why[0] in (asyncore.ECONNRESET, asyncore.ENOTCONN,
+            if why.errno in (asyncore.ECONNRESET, asyncore.ENOTCONN,
                           asyncore.ESHUTDOWN):
                 self.handle_close()
                 return ''
-            elif why[0] == errno.ENOENT:
+            elif why.errno == errno.ENOENT:
                 # Required in order to keep it non-blocking
                 return b''
             else:
