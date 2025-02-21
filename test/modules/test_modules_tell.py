@@ -302,7 +302,6 @@ SAFE_PAIRS = (
      '\x02  leading AND trailing inside AND outside  \x02  '),
 )
 
-
 def test_format_safe_lstrip_basic():
     """Test handling of basic whitespace."""
     assert tell._format_safe_lstrip(

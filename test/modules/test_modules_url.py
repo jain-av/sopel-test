@@ -5,8 +5,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import re
 
 import pytest
-
-from sopel import bot, loader, module, plugin, plugins, trigger
+from sopel import bot, config, loader, module, plugin, plugins, trigger
 from sopel.modules import url
 
 
@@ -28,7 +27,7 @@ INVALID_URLS = (
 @pytest.fixture
 def mockbot(configfactory):
     tmpconfig = configfactory('test.cfg', TMP_CONFIG)
-    url_plugin = plugins.handlers.PyModulePlugin('url', 'sopel.modules')
+    url_plugin = plugins.PyModulePlugin('url', 'sopel.modules')
 
     # setup the bot
     sopel = bot.Sopel(tmpconfig)
@@ -38,12 +37,12 @@ def mockbot(configfactory):
 
     @module.url(re.escape('https://example.com/') + r'(.+)')
     @plugin.label('handle_urls_https')
-    def url_callback_https(bot, trigger, match):
+    def url_callback_https(bot, trigger):
         pass
 
     @module.url(re.escape('http://example.com/') + r'(.+)')
     @plugin.label('handle_urls_http')
-    def url_callback_http(bot, trigger, match):
+    def url_callback_http(bot, trigger):
         pass
 
     # prepare callables to be registered
@@ -55,16 +54,16 @@ def mockbot(configfactory):
     # clean callables and set plugin name by hand
     # since the loader and plugin handlers are excluded here
     for handler in callables:
-        loader.clean_callable(handler, tmpconfig)
+        loader.clean_callable(handler, sopel.config)
         handler.plugin_name = 'testplugin'
 
     # register callables
-    sopel.register_urls(callables)
+    sopel.register_callbacks(callables)
 
     # manually register URL Callback
     pattern = re.escape('https://help.example.com/') + r'(.+)'
 
-    def callback(bot, trigger, match):
+    def callback(bot, trigger):
         pass
 
     sopel.register_url_callback(pattern, callback)
@@ -88,19 +87,19 @@ def test_check_callbacks(mockbot):
 def test_url_triggers_rules_and_auto_title(mockbot):
     line = ':Foo!foo@example.com PRIVMSG #sopel :https://not.example.com/test'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = mockbot.rules.get_triggered_rules(mockbot, pretrigger)
+    results = mockbot.get_rules_for(pretrigger)
 
     assert len(results) == 1, 'Only one should match'
     result = results[0]
-    assert isinstance(result[0], plugins.rules.Rule)
-    assert result[0].get_rule_label() == 'title_auto'
+    assert isinstance(result, plugins.Rule)
+    assert result.label == 'title_auto'
 
     line = ':Foo!foo@example.com PRIVMSG #sopel :https://example.com/test'
     pretrigger = trigger.PreTrigger(mockbot.nick, line)
-    results = mockbot.rules.get_triggered_rules(mockbot, pretrigger)
+    results = mockbot.get_rules_for(pretrigger)
 
     assert len(results) == 2, (
         'Two rules should match: title_auto and handle_urls_https')
-    labels = sorted(result[0].get_rule_label() for result in results)
+    labels = sorted(result.label for result in results)
     expected = ['handle_urls_https', 'title_auto']
     assert labels == expected

@@ -37,7 +37,7 @@ def test_check_version_request_fails(mockbot, requests_mock):
     while mockbot.memory.get('update_failures', 0) < find_updates.max_failures:
         find_updates.check_version(mockbot)
 
-        assert len(mockbot.backend.message_sent) == 0, (
+        assert not mockbot.backend.message_sent, (
             'check_version() should fail silently until max_failures is reached')
 
     # this is check number max_failures; *now* it should fail loudly
