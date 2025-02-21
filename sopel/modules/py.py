@@ -12,7 +12,7 @@ from requests import get
 
 from sopel import plugin
 from sopel.config import types
-from sopel.tools.web import quote
+from urllib.parse import quote
 
 
 class PySection(types.StaticSection):

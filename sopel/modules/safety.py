@@ -14,28 +14,14 @@ import re
 import sys
 import threading
 import time
+import json
 
 import requests
 
 from sopel import formatting, plugin, tools
 from sopel.config import types
 
-try:
-    # This is done separately from the below version if/else because JSONDecodeError
-    # didn't appear until Python 3.5, but Sopel claims support for 3.3+
-    # Redo this whole block of nonsense when dropping py2/old py3 support
-    from json import JSONDecodeError as InvalidJSONResponse
-except ImportError:
-    InvalidJSONResponse = ValueError
-
-if sys.version_info.major > 2:
-    unicode = str
-    from urllib.request import urlretrieve
-    from urllib.parse import urlparse
-else:
-    from urllib import urlretrieve
-    from urlparse import urlparse
-
+from urllib.parse import urlparse, urljoin, quote, unquote
 
 LOGGER = logging.getLogger(__name__)
 PLUGIN_OUTPUT_PREFIX = '[safety] '
@@ -106,13 +92,8 @@ def setup(bot):
             _download_domain_list(loc)
     else:
         _download_domain_list(loc)
-    with open(loc, 'r') as f:
+    with open(loc, 'r', encoding='utf-8') as f:
         for line in f:
-            if sys.version_info.major < 3:
-                line = unicode(line, 'utf-8')
-            else:
-                line = unicode(line)
-
             clean_line = line.strip().lower()
 
             if not clean_line or clean_line[0] == '#':
@@ -139,7 +120,13 @@ def shutdown(bot):
 def _download_domain_list(path):
     url = 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts'
     LOGGER.info('Downloading malicious domain list from %s', url)
-    urlretrieve(url, path)
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(response.text)
+    except requests.exceptions.RequestException as e:
+        LOGGER.error(f"Error downloading domain list: {e}")
 
 
 @plugin.rule(r'(?u).*(https?://\S+).*')
@@ -182,11 +169,14 @@ def url_handler(bot, trigger):
     apikey = bot.config.safety.vt_api_key
     try:
         if apikey is not None and use_vt:
-            payload = {'resource': unicode(trigger),
+            url_to_scan = trigger.group(1)
+            payload = {'resource': url_to_scan,
                        'apikey': apikey,
                        'scan': '1'}
 
-            if trigger not in bot.memory['safety_cache']:
+            cache_key = url_to_scan  # Use the URL as the cache key
+
+            if cache_key not in bot.memory['safety_cache']:
                 r = requests.post(vt_base_api_url + 'report', data=payload)
                 r.raise_for_status()
                 result = r.json()
@@ -197,22 +187,27 @@ def url_handler(bot, trigger):
                     data = {'positives': result['positives'],
                             'total': result['total'],
                             'fetched': fetched}
-                    bot.memory['safety_cache'][trigger] = data
-                    if len(bot.memory['safety_cache']) >= (2 * cache_limit):
-                        _clean_cache(bot)
+                    bot.memory['safety_cache'][cache_key] = data
+                    
+                    # Basic cache limit enforcement:
+                    with bot.memory['safety_cache_lock']:
+                        if len(bot.memory['safety_cache']) >= cache_limit:
+                            _clean_cache(bot)
             else:
                 LOGGER.debug('using cache')
-                result = bot.memory['safety_cache'][trigger]
+                result = bot.memory['safety_cache'][cache_key]
+
             positives = result.get('positives', 0)
             total = result.get('total', 0)
+
     except requests.exceptions.RequestException:
         # Ignoring exceptions with VT so domain list will always work
         LOGGER.debug('[VirusTotal] Error obtaining response.', exc_info=True)
-    except InvalidJSONResponse:
+    except json.JSONDecodeError:
         # Ignoring exceptions with VT so domain list will always work
         LOGGER.debug('[VirusTotal] Malformed response (invalid JSON).', exc_info=True)
 
-    if unicode(netloc).lower() in malware_domains:
+    if netloc.lower() in malware_domains:
         positives += 1
         total += 1
 
@@ -253,23 +248,22 @@ def toggle_safety(bot, trigger):
 @plugin.interval(24 * 60 * 60)
 def _clean_cache(bot):
     """Cleans up old entries in URL safety cache."""
-    if bot.memory['safety_cache_lock'].acquire(False):
+    with bot.memory['safety_cache_lock']:
         LOGGER.info('Starting safety cache cleanup...')
         try:
             # clean up by age first
             cutoff = time.time() - (7 * 24 * 60 * 60)  # 7 days ago
-            old_keys = []
-            for key, data in tools.iteritems(bot.memory['safety_cache']):
-                if data['fetched'] <= cutoff:
-                    old_keys.append(key)
+            old_keys = [key for key, data in bot.memory['safety_cache'].items() if data['fetched'] <= cutoff]
             for key in old_keys:
                 bot.memory['safety_cache'].pop(key, None)
+        except Exception as e:
+            LOGGER.error(f"Error during cache cleanup: {e}")
 
             # clean up more values if the cache is still too big
             overage = len(bot.memory['safety_cache']) - cache_limit
             if overage > 0:
                 extra_keys = sorted(
-                    (data.fetched, key)
+                    (data['fetched'], key)
                     for (key, data)
                     in bot.memory['safety_cache'].items())[:overage]
                 for (_, key) in extra_keys:

@@ -95,6 +95,343 @@ def dump_database(filename, data):
     If the file does not exist, it is created.
     """
     with io.open(filename, 'w', encoding='utf-8') as database:
+        for unixtime, reminders in data.items():
+            for channel, nick, message in reminders:
+                line = '%s\t%s\t%s\t%s\n' % (unixtime, channel, nick, message)
+                database.write(line)
+
+
+def create_reminder(bot, trigger, duration, message):
+    """Create a reminder into the ``bot``'s database and reply to the sender
+
+    :param bot: the bot's instance
+    :type bot: :class:`~sopel.bot.SopelWrapper`
+    :param trigger: the object that triggered the call
+    :type trigger: :class:`~sopel.trigger.Trigger`
+    :param int duration: duration from now, in seconds, until ``message``
+                         must be reminded
+    :param str message: message to be reminded
+    :return: the reminder's timestamp
+    :rtype: :class:`int`
+    """
+    timestamp = int(time.time()) + duration
+    reminder = (trigger.sender, trigger.nick, message)
+    try:
+        bot.rdb[timestamp].append(reminder)
+    except KeyError:
+        bot.rdb[timestamp] = [reminder]
+
+    dump_database(bot.rfn, bot.rdb)
+    return timestamp
+
+
+def setup(bot):
+    """Load the remind database"""
+    bot.rfn = get_filename(bot)
+
+    # Pre-7.0 migration logic. Remove in 8.0 or 9.0.
+    old = bot.nick + '-' + bot.config.core.host + '.reminders.db'
+    old = os.path.join(bot.config.core.homedir, old)
+    if os.path.isfile(old):
+        LOGGER.info("Attempting to migrate old 'remind' database {}..."
+                    .format(old))
+        try:
+            os.rename(old, bot.rfn)
+        except OSError:
+            LOGGER.error("Migration failed!")
+            LOGGER.error("Old filename: {}".format(old))
+            LOGGER.error("New filename: {}".format(bot.rfn))
+            LOGGER.error(
+                "See https://sopel.chat/usage/installing/upgrading-to-sopel-7/#reminder-db-migration")
+        else:
+            LOGGER.info("Migration finished!")
+    # End migration logic
+
+    bot.rdb = load_database(bot.rfn)
+
+
+def shutdown(bot):
+    """Dump the remind database before shutdown"""
+    dump_database(bot.rfn, bot.rdb)
+    bot.rdb = {}
+    del bot.rfn
+    del bot.rdb
+
+
+@plugin.interval(2.5)
+def remind_monitoring(bot):
+    """Check for reminder"""
+    now = int(time.time())
+    unixtimes = [int(key) for key in bot.rdb]
+    oldtimes = [t for t in unixtimes if t <= now]
+    if oldtimes:
+        for oldtime in oldtimes:
+            for (channel, nick, message) in bot.rdb[oldtime]:
+                if message:
+                    bot.say(nick + ': ' + message, channel)
+                else:
+                    bot.say(nick + '!', channel)
+            del bot.rdb[oldtime]
+        dump_database(bot.rfn, bot.rdb)
+
+
+SCALING = collections.OrderedDict([
+    ('years', 365.25 * 24 * 3600),
+    ('year', 365.25 * 24 * 3600),
+    ('yrs', 365.25 * 24 * 3600),
+    ('y', 365.25 * 24 * 3600),
+
+    ('months', 29.53059 * 24 * 3600),
+    ('month', 29.53059 * 24 * 3600),
+    ('mo', 29.53059 * 24 * 3600),
+
+    ('weeks', 7 * 24 * 3600),
+    ('week', 7 * 24 * 3600),
+    ('wks', 7 * 24 * 3600),
+    ('wk', 7 * 24 * 3600),
+    ('w', 7 * 24 * 3600),
+
+    ('days', 24 * 3600),
+    ('day', 24 * 3600),
+    ('d', 24 * 3600),
+
+    ('hours', 3600),
+    ('hour', 3600),
+    ('hrs', 3600),
+    ('hr', 3600),
+    ('h', 3600),
+
+    ('minutes', 60),
+    ('minute', 60),
+    ('mins', 60),
+    ('min', 60),
+    ('m', 60),
+
+    ('seconds', 1),
+    ('second', 1),
+    ('secs', 1),
+    ('sec', 1),
+    ('s', 1),
+])
+
+PERIODS = '|'.join(SCALING.keys())
+
+
+@plugin.command('in')
+@plugin.example('.in 3h45m Go to class')
+def remind_in(bot, trigger):
+    """Gives you a reminder in the given amount of time."""
+    if not trigger.group(2):
+        bot.reply("Missing arguments for reminder command.")
+        return plugin.NOLIMIT
+    if trigger.group(3) and not trigger.group(4):
+        bot.reply("No message given for reminder.")
+        return plugin.NOLIMIT
+    duration = 0
+    message = filter(None, re.split(r'(\d+(?:\.\d+)? ?(?:(?i)' + PERIODS + ')) ?',
+                                    trigger.group(2))[1:])
+    reminder = ''
+    stop = False
+    for piece in message:
+        grp = re.match(r'(\d+(?:\.\d+)?) ?(.*) ?', piece)
+        if grp and not stop:
+            length = float(grp.group(1))
+            factor = SCALING.get(grp.group(2).lower(), 60)
+            duration += length * factor
+        else:
+            reminder = reminder + piece
+            stop = True
+    if duration == 0:
+        bot.reply("Sorry, didn't understand the input.")
+        return plugin.NOLIMIT
+
+    if duration % 1:
+        duration = int(duration) + 1
+    else:
+        duration = int(duration)
+    timezone = get_timezone(
+        bot.db, bot.config, None, trigger.nick, trigger.sender)
+    timestamp = create_reminder(bot, trigger, duration, reminder)
+
+    if duration >= 60:
+        human_time = format_time(
+            bot.db,
+            bot.config,
+            timezone,
+            trigger.nick,
+            trigger.sender,
+            datetime.utcfromtimestamp(timestamp))
+        bot.reply('Okay, will remind at %s' % human_time)
+    else:
+        bot.reply('Okay, will remind in %s secs' % duration)
+
+
+REGEX_AT = re.compile(
+    # hours:minutes
+    r'(?P<hours>\d+):(?P<minutes>\d+)'
+    # optional seconds
+    r'(?::(?P<seconds>\d+))?'
+    # optional timezone
+    r'(?P<tz>[^\s\d]+)?'
+    # optional date (start)
+    r'(?:\s+'
+    # - date 1 (at least one digit)
+    r'(?P<date1>\d{1,4})'
+    # - separator (one character)
+    r'(?P<sep>[./-])'
+    # - date 2 (at least one digit)
+    r'(?P<date2>\d{1,4})'
+    # - optional sep + date 3 (at least one digit)
+    r'(?:(?P=sep)(?P<date3>\d{1,4}))?'
+    r')?'  # (end)
+    # at least one space + message
+    r'\s+(?P<message>.*)'
+)
+
+
+class TimeReminder(object):
+    """Time reminder for the ``at`` command"""
+    def __init__(self,
+                 hour,
+                 minute,
+                 second,
+                 timezone,
+                 date1,
+                 date2,
+                 date3,
+                 message):
+        self.hour = hour
+        self.minute = minute
+        self.second = second
+        self.timezone = pytz.timezone(timezone)
+        self.message = message
+
+        year = None
+        month = None
+        day = None
+
+        if date1 and date2 and date3:
+            if len(date1) == 4:
+                # YYYY-mm-dd
+                year = int(date1)
+                month = int(date2)
+                day = int(date3)
+            else:
+                # dd-mm-YYYY or dd/mm/YY
+                year = int(date3)
+                month = int(date2)
+                day = int(date1)
+        elif date1 and date2:
+            if len(date1) == 4:
+                # YYYY-mm
+                year = int(date1)
+                month = int(date2)
+            elif len(date2) == 4:
+                # mm-YYYY
+                year = int(date2)
+                month = int(date1)
+            else:
+                # dd/mm
+                month = int(date2)
+                day = int(date1)
+
+# coding=utf-8
+"""
+remind.py - Sopel Reminder Plugin
+Copyright 2011, Sean B. Palmer, inamidst.com
+Copyright 2019, dgw, technobabbl.es
+Licensed under the Eiffel Forum License 2.
+
+https://sopel.chat
+"""
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import collections
+from datetime import datetime, timedelta
+import io  # don't use `codecs` for loading the DB; it will split lines on some IRC formatting
+import logging
+import os
+import re
+import time
+
+import pytz
+
+from sopel import plugin, tools
+from sopel.tools.time import format_time, get_timezone, validate_timezone
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def get_filename(bot):
+    """Get the remind database's filename
+
+    :param bot: instance of Sopel
+    :type bot: :class:`sopel.bot.Sopel`
+    :return: the remind database's filename
+    :rtype: str
+
+    The remind database filename is based on the bot's nick and its
+    configured ``core.host``, and it is located in the ``bot``'s ``homedir``.
+    """
+    name = bot.config.basename + '.reminders.db'
+    return os.path.join(bot.config.core.homedir, name)
+
+
+def load_database(filename):
+    """Load the remind database from a file
+
+    :param str filename: absolute path to the remind database file
+    :return: a :class:`dict` of reminders stored by timestamp
+    :rtype: dict
+
+    The remind database is a plain text file (utf-8 encoded) with tab-separated
+    columns of data: time, channel, nick, and message. This function reads this
+    file and outputs a :class:`dict` where keys are the timestamps of the
+    reminders, and values are list of 3-value tuple of reminder data:
+    ``(channel, nick, message)``.
+
+    .. note::
+
+        This function ignores microseconds from the timestamp, if any, meaning
+        that ``523549800.245`` will be read as ``523549800``.
+
+    .. note::
+
+        If ``filename`` is not an existing file, this function returns an
+        empty :class:`dict`.
+
+    """
+    if not os.path.isfile(filename):
+        # no file to read
+        return {}
+
+    data = {}
+    with io.open(filename, 'r', encoding='utf-8') as database:
+        for line in database:
+            unixtime, channel, nick, message = line.split('\t', 3)
+            message = message.rstrip('\n')
+            timestamp = int(float(unixtime))  # ignore microseconds
+            reminder = (channel, nick, message)
+            try:
+                data[timestamp].append(reminder)
+            except KeyError:
+                data[timestamp] = [reminder]
+    return data
+
+
+def dump_database(filename, data):
+    """Dump the remind database into a file
+
+    :param str filename: absolute path to the remind database file
+    :param dict data: remind database to dump
+
+    The remind database is dumped into a plain text file (utf-8 encoded) as
+    tab-separated columns of data: unixtime, channel, nick, and message.
+
+    If the file does not exist, it is created.
+    """
+    with io.open(filename, 'w', encoding='utf-8') as database:
         for unixtime, reminders in tools.iteritems(data):
             for channel, nick, message in reminders:
                 line = '%s\t%s\t%s\t%s\n' % (unixtime, channel, nick, message)
@@ -340,34 +677,21 @@ class TimeReminder(object):
         self.day = day
 
     def __eq__(self, other):
-        return all(
-            getattr(self, attr) == getattr(other, attr, None)
-            for attr in [
-                'hour',
-                'minute',
-                'second',
-                'timezone',
-                'year',
-                'month',
-                'day',
-                'message',
-            ]
+        if not isinstance(other, TimeReminder):
+            return False
+        return (
+            self.hour == other.hour and
+            self.minute == other.minute and
+            self.second == other.second and
+            self.timezone == other.timezone and
+            self.year == other.year and
+            self.month == other.month and
+            self.day == other.day and
+            self.message == other.message
         )
 
     def __ne__(self, other):
-        return any(
-            getattr(self, attr) != getattr(other, attr, None)
-            for attr in [
-                'hour',
-                'minute',
-                'second',
-                'timezone',
-                'year',
-                'month',
-                'day',
-                'message',
-            ]
-        )
+        return not self.__eq__(other)
 
     # Mutable objects probably shouldn't be made hashable
     # https://docs.python.org/3/reference/datamodel.html#object.__hash__
@@ -408,13 +732,10 @@ class TimeReminder(object):
         at_time = datetime(
             year, month, day,
             self.hour, self.minute, self.second,
-            tzinfo=today.tzinfo)
+            tzinfo=self.timezone)  # Use self.timezone here
 
         timediff = at_time - today
-        duration = timediff.seconds
-
-        if timediff.days > 0:
-            duration = duration + (86400 * timediff.days)
+        duration = int(timediff.total_seconds())
 
         return duration
 

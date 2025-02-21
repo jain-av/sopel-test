@@ -23,7 +23,7 @@ header_spoof = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36'
 }
 r_bing = re.compile(r'<li(?: class="b_algo")?><h2><a href="([^"]+)"')
-r_duck = re.compile(r'nofollow" class="[^"]+" href="(?!(?:https?:\/\/r\.search\.yahoo)|(?:https?:\/\/duckduckgo\.com\/y\.js)(?:\/l\/\?kh=-1&amp;uddg=))(.*?)">')
+r_duck = re.compile(r'nofollow" class="[^"]+" href="(?!(?:https?:\/\/r\.search\.yahoo)|(?:https?:\/\/duckduckgo\.com\/y\.js)(?:\/l/\?kh=-1&amp;uddg=))(.*?)">')
 
 
 def bing_search(query, lang='en-US'):
@@ -32,7 +32,7 @@ def bing_search(query, lang='en-US'):
         'mkt': lang,
         'q': query,
     }
-    response = requests.get(base, parameters, headers=header_spoof)
+    response = requests.get(base, params=parameters, headers=header_spoof)
     m = r_bing.search(response.text)
     if m:
         return m.group(1)
@@ -45,7 +45,7 @@ def duck_search(query):
         'kl': 'us-en',
         'q': query,
     }
-    bytes = requests.get(base, parameters, headers=header_spoof).text
+    bytes = requests.get(base, params=parameters, headers=header_spoof).text
     if 'web-result' in bytes:  # filter out the adds on top of the page
         bytes = bytes.split('web-result')[1]
     m = r_duck.search(bytes)
@@ -65,7 +65,7 @@ def duck_api(query):
         'q': query,
     }
     try:
-        results = requests.get(base, parameters).json()
+        results = requests.get(base, params=parameters).json()
     except ValueError:
         return None
     if results['Redirect']:
@@ -199,7 +199,7 @@ def suggest(bot, trigger):
         'hl': 'en',
         'q': query,
     }
-    response = requests.get(base, parameters)
+    response = requests.get(base, params=parameters)
     answer = xmltodict.parse(response.text)['toplevel']
     try:
         answer = answer['CompleteSuggestion'][0]['suggestion']['@data']

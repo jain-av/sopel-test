@@ -59,7 +59,13 @@ def translate(text, in_lang='auto', out_lang='en'):
         "q": text,
     }
     url = "https://translate.googleapis.com/translate_a/single"
-    result = requests.get(url, params=query, timeout=40, headers=headers).text
+    try:
+        response = requests.get(url, params=query, timeout=40, headers=headers)
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        result = response.text
+    except requests.exceptions.RequestException as e:
+        LOGGER.error(f"Request failed: {e}")
+        return None, in_lang
 
     if result == '[,,""]':
         return None, in_lang

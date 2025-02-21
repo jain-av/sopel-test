@@ -40,17 +40,17 @@ def _chunks(items, size):
 @plugin.output_prefix('[ANNOUNCEMENT] ')
 def announce(bot, trigger):
     """Send an announcement to all channels the bot is in."""
-    if trigger.group(2) is None:
+    if not trigger.group(2):
         bot.reply('Announce what? I need a message to say.')
         return
 
     size = 1
     try:
-        size = bot.isupport.TARGMAX.get('PRIVMSG', size)
+        size = bot.network.isupport.get('TARGMAX', {}).get('PRIVMSG', size)
     except AttributeError:
         pass
 
-    channels = _chunks(bot.channels.keys(), size)
+    channels = _chunks(bot.channels, size)
     for cgroup in channels:
         bot.say(trigger.group(2), ','.join(cgroup))
 

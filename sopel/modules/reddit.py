@@ -103,11 +103,14 @@ def image_info(bot, trigger, match):
     preview = match.group("subdomain") == "preview"
     if preview:
         url = "https://i.redd.it/{}".format(match.group("image"))
-    results = list(
-        bot.memory['reddit_praw']
-        .subreddit('all')
-        .search('url:{}'.format(url), sort='new', params={'include_over_18': 'on'})
-    )
+    
+    # Use the new select syntax and execute method
+    results = list(bot.memory['reddit_praw'].subreddit('all').search(
+        query='url:{}'.format(url), 
+        sort='new', 
+        params={'include_over_18': 'on'}
+    ))
+    
     try:
         oldest = results[-1]
     except IndexError:
@@ -293,7 +296,8 @@ def subreddit_info(bot, trigger, match, commanded=False):
         return plugin.NOLIMIT
 
     try:
-        s = r.subreddit(match)
+        s = bot.memory['reddit_praw'].subreddit(match)
+        # Accessing an attribute triggers the API call and potential exceptions
         s.subreddit_type
     except prawcore.exceptions.Forbidden:
         bot.reply("r/" + match + " appears to be a private subreddit!")
@@ -310,7 +314,7 @@ def subreddit_info(bot, trigger, match, commanded=False):
                'Created at {created} | {public_description}')
 
     nsfw = ''
-    if s.over18:
+    if s.over_18:
         nsfw += ' ' + bold(color('[NSFW]', colors.RED))
 
         sfw = bot.db.get_channel_value(trigger.sender, 'sfw')
@@ -332,6 +336,7 @@ def redditor_info(bot, trigger, match, commanded=False):
     """Shows information about the given Redditor"""
     try:
         u = bot.memory['reddit_praw'].redditor(match)
+        # Accessing an attribute triggers the API call and potential exceptions
         u.id  # shortcut to check if the user exists or not
     except prawcore.exceptions.NotFound:
         if commanded:

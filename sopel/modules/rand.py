@@ -23,8 +23,8 @@ from sopel import plugin
 @plugin.output_prefix('[rand] ')
 def rand(bot, trigger):
     """Replies with a random number between first and second argument."""
-    arg1 = trigger.group(3)
-    arg2 = trigger.group(4)
+    arg1 = trigger.group(2)  # Changed from group(3)
+    arg2 = trigger.group(3)  # Changed from group(4)
 
     try:
         if arg2 is not None:

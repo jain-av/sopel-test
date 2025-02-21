@@ -30,7 +30,7 @@ def _load(bot, plugin):
         raise
 
 
-@plugin.nickname_command("reload")
+@plugin.command("reload")
 @plugin.priority("low")
 @plugin.thread(False)
 @plugin.require_admin
@@ -57,7 +57,7 @@ def f_reload(bot, trigger):
     ))
 
 
-@plugin.nickname_command('update')
+@plugin.command('update')
 @plugin.require_admin
 @plugin.output_prefix(PLUGIN_OUTPUT_PREFIX)
 def f_update(bot, trigger):
@@ -70,7 +70,7 @@ def f_update(bot, trigger):
     f_reload(bot, trigger)
 
 
-@plugin.nickname_command("load")
+@plugin.command("load")
 @plugin.priority("low")
 @plugin.thread(False)
 @plugin.require_admin

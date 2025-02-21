@@ -9,6 +9,7 @@ https://sopel.chat
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 from sopel import plugin
+from sopel.db import get_nick_value, set_nick_value
 
 
 # Copied from pronoun.is, leaving a *lot* out. If
@@ -42,14 +43,14 @@ KNOWN_SETS = {
 def pronouns(bot, trigger):
     """Show the pronouns for a given user, defaulting to the current user if left blank."""
     if not trigger.group(3):
-        pronouns = bot.db.get_nick_value(trigger.nick, 'pronouns')
+        pronouns = get_nick_value(bot.db, trigger.nick, 'pronouns')
         if pronouns:
             say_pronouns(bot, trigger.nick, pronouns)
         else:
             bot.reply("I don't know your pronouns! You can set them with "
                       "{}setpronouns".format(bot.config.core.help_prefix))
     else:
-        pronouns = bot.db.get_nick_value(trigger.group(3), 'pronouns')
+        pronouns = get_nick_value(bot.db, trigger.group(3), 'pronouns')
         if pronouns:
             say_pronouns(bot, trigger.group(3), pronouns)
         elif trigger.group(3) == bot.nick:
@@ -101,5 +102,5 @@ def set_pronouns(bot, trigger):
                 "reflexive, as in: they/them/their/theirs/themselves"
             )
             return
-    bot.db.set_nick_value(trigger.nick, 'pronouns', pronouns)
+    set_nick_value(bot.db, trigger.nick, 'pronouns', pronouns)
     bot.reply("Thanks for telling me!" + disambig)

@@ -55,15 +55,19 @@ def version(bot, trigger):
 @plugin.ctcp('VERSION')
 @plugin.rate(20)
 def ctcp_version(bot, trigger):
-    bot.write(('NOTICE', trigger.nick),
-              '\x01VERSION Sopel IRC Bot version %s\x01' % release)
+    bot.notice(
+        '\x01VERSION Sopel IRC Bot version %s\x01' % release,
+        trigger.nick
+    )
 
 
 @plugin.ctcp('SOURCE')
 @plugin.rate(20)
 def ctcp_source(bot, trigger):
-    bot.write(('NOTICE', trigger.nick),
-              '\x01SOURCE https://github.com/sopel-irc/sopel\x01')
+    bot.notice(
+        '\x01SOURCE https://github.com/sopel-irc/sopel\x01',
+        trigger.nick
+    )
 
 
 @plugin.ctcp('PING')
@@ -72,8 +76,10 @@ def ctcp_ping(bot, trigger):
     text = trigger.group()
     text = text.replace("PING ", "")
     text = text.replace("\x01", "")
-    bot.write(('NOTICE', trigger.nick),
-              '\x01PING {0}\x01'.format(text))
+    bot.notice(
+        '\x01PING {0}\x01'.format(text),
+        trigger.nick
+    )
 
 
 @plugin.ctcp('TIME')
@@ -81,5 +87,7 @@ def ctcp_ping(bot, trigger):
 def ctcp_time(bot, trigger):
     dt = datetime.datetime.now()
     current_time = dt.strftime("%A, %d. %B %Y %I:%M%p")
-    bot.write(('NOTICE', trigger.nick),
-              '\x01TIME {0}\x01'.format(current_time))
+    bot.notice(
+        '\x01TIME {0}\x01'.format(current_time),
+        trigger.nick
+    )

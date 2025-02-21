@@ -17,6 +17,9 @@ import sys
 
 import pytz
 import requests
+from sqlalchemy import create_engine, Column, String, DateTime, Boolean, Integer
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
 from sopel import formatting, plugin, tools
 
@@ -47,44 +50,69 @@ WIKI_PAGE_NAMES = [
 r_tld = re.compile(r'^\.(\S+)')
 r_idn = re.compile(r'^(xn--[A-Za-z0-9]+)')
 
+Base = declarative_base()
+
+class TLDListCache(Base):
+    __tablename__ = 'tld_list_cache'
+
+    id = Column(Integer, primary_key=True)
+    tld_list = Column(String)
+    tld_list_cache_updated = Column(DateTime)
+
+class TLDDataCache(Base):
+    __tablename__ = 'tld_data_cache'
+
+    id = Column(Integer, primary_key=True)
+    tld_data = Column(String)
+    tld_data_cache_updated = Column(DateTime)
 
 def setup(bot):
-    bot.memory['tld_list_cache'] = bot.db.get_plugin_value(
-        'tld', 'tld_list_cache', [])
-    bot.memory['tld_list_cache_updated'] = bot.db.get_plugin_value(
-        'tld', 'tld_list_cache_updated', DEFAULT_CACHE_TIME)
-    bot.memory['tld_data_cache'] = bot.db.get_plugin_value(
-        'tld', 'tld_data_cache', {})
-    bot.memory['tld_data_cache_updated'] = bot.db.get_plugin_value(
-        'tld', 'tld_data_cache_updated', DEFAULT_CACHE_TIME)
+    engine = create_engine(bot.config.core.db_uri)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
 
-    # Restore datetime objects from string format. If parsing fails, consider
-    # that cache obsolete so it will be updated at the next age check.
-    try:
-        bot.memory['tld_list_cache_updated'] = _strptime_as_utc(
-            bot.memory['tld_list_cache_updated'])
-    except ValueError:
+    tld_list_cache = session.query(TLDListCache).first()
+    if tld_list_cache:
+        bot.memory['tld_list_cache'] = tld_list_cache.tld_list
+        bot.memory['tld_list_cache_updated'] = tld_list_cache.tld_list_cache_updated
+    else:
+        bot.memory['tld_list_cache'] = []
         bot.memory['tld_list_cache_updated'] = DEFAULT_CACHE_DATETIME
-    try:
-        bot.memory['tld_data_cache_updated'] = _strptime_as_utc(
-            bot.memory['tld_data_cache_updated'])
-    except ValueError:
+
+    tld_data_cache = session.query(TLDDataCache).first()
+    if tld_data_cache:
+        bot.memory['tld_data_cache'] = tld_data_cache.tld_data
+        bot.memory['tld_data_cache_updated'] = tld_data_cache.tld_data_cache_updated
+    else:
+        bot.memory['tld_data_cache'] = {}
         bot.memory['tld_data_cache_updated'] = DEFAULT_CACHE_DATETIME
 
+    session.close()
 
 def shutdown(bot):
+    engine = create_engine(bot.config.core.db_uri)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
     if bot.memory.get('tld_list_cache'):
-        bot.db.set_plugin_value(
-            'tld', 'tld_list_cache', bot.memory['tld_list_cache'])
-        bot.db.set_plugin_value(
-            'tld', 'tld_list_cache_updated',
-            bot.memory['tld_list_cache_updated'].strftime(DATE_FORMAT))
+        tld_list_cache = session.query(TLDListCache).first()
+        if not tld_list_cache:
+            tld_list_cache = TLDListCache()
+        tld_list_cache.tld_list = bot.memory['tld_list_cache']
+        tld_list_cache.tld_list_cache_updated = bot.memory['tld_list_cache_updated']
+        session.add(tld_list_cache)
+
     if bot.memory.get('tld_data_cache'):
-        bot.db.set_plugin_value(
-            'tld', 'tld_data_cache', bot.memory['tld_data_cache'])
-        bot.db.set_plugin_value(
-            'tld', 'tld_data_cache_updated',
-            bot.memory['tld_data_cache_updated'].strftime(DATE_FORMAT))
+        tld_data_cache = session.query(TLDDataCache).first()
+        if not tld_data_cache:
+            tld_data_cache = TLDDataCache()
+        tld_data_cache.tld_data = bot.memory['tld_data_cache']
+        tld_data_cache.tld_data_cache_updated = bot.memory['tld_data_cache_updated']
+        session.add(tld_data_cache)
+
+    session.commit()
+    session.close()
 
     for key in [
         'tld_list_cache',
