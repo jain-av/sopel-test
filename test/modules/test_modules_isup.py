@@ -6,7 +6,7 @@ import pytest
 import requests.exceptions
 
 from sopel.modules import isup
-from sopel.tests import rawlist
+from sopel.testing import rawlist
 
 
 VALID_SITE_URLS = (
@@ -65,7 +65,7 @@ host = chat.freenode.net
 @pytest.fixture
 def bot(botfactory, configfactory):
     settings = configfactory('default.ini', TMP_CONFIG)
-    return botfactory.preloaded(settings, ['isup'])
+    return botfactory(settings, ['isup'])
 
 
 @pytest.fixture
@@ -87,9 +87,9 @@ def test_isup_command_ok(irc, bot, user, requests_mock):
 
     irc.pm(user, '.isup example.com')
 
-    assert len(bot.backend.message_sent) == 1, (
+    assert len(bot.sent) == 1, (
         '.isup command should output exactly one line')
-    assert bot.backend.message_sent == rawlist(
+    assert bot.sent == rawlist(
         'PRIVMSG User :[isup] http://example.com looks fine to me.'
     )
 
@@ -104,9 +104,9 @@ def test_isup_command_http_error(irc, bot, user, requests_mock):
 
     irc.pm(user, '.isup example.com')
 
-    assert len(bot.backend.message_sent) == 1, (
+    assert len(bot.sent) == 1, (
         '.isup command should output exactly one line')
-    assert bot.backend.message_sent == rawlist(
+    assert bot.sent == rawlist(
         'PRIVMSG User :[isup] http://example.com looks down to me (HTTP 503 "Service Unavailable").'
     )
 
@@ -120,9 +120,9 @@ def test_isup_command_unparseable(irc, bot, user, requests_mock):
 
     irc.pm(user, '.isup .foo')
 
-    assert len(bot.backend.message_sent) == 1, (
+    assert len(bot.sent) == 1, (
         '.isup command should output exactly one line')
-    assert bot.backend.message_sent == rawlist(
+    assert bot.sent == rawlist(
         'PRIVMSG User :User: "http://.foo" is not a valid URL.'
     )
 
@@ -158,9 +158,9 @@ def test_isup_command_requests_error(irc, bot, user, requests_mock, exc, result)
 
     irc.pm(user, '.isup {}'.format(url))
 
-    assert len(bot.backend.message_sent) == 1, (
+    assert len(bot.sent) == 1, (
         '.isup command should output exactly one line')
-    assert bot.backend.message_sent == rawlist(
+    assert bot.sent == rawlist(
         'PRIVMSG User :[isup] {}'.format(result)
     )
 
@@ -173,8 +173,8 @@ def test_isupinsecure_command(irc, bot, user, requests_mock):
 
     irc.pm(user, '.isupinsecure https://example.com')
 
-    assert len(bot.backend.message_sent) == 1, (
+    assert len(bot.sent) == 1, (
         '.isupinsecure command should output exactly one line')
-    assert bot.backend.message_sent == rawlist(
+    assert bot.sent == rawlist(
         'PRIVMSG User :[isup] https://example.com looks fine to me.'
     )
