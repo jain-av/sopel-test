@@ -9,7 +9,7 @@ import sys
 
 from dns import rdtypes, resolver
 
-from sopel.tools import deprecated
+# from sopel.tools import deprecated  # Removed deprecated import
 
 if sys.version_info.major >= 3:
     unicode = str
@@ -25,7 +25,7 @@ def get_cnames(domain):
     :return: list (of str)
     """
     try:
-        answer = resolver.query(domain, "CNAME")
+        answer = resolver.resolve(domain, "CNAME")  # Replaced resolver.query with resolver.resolve
     except resolver.NoAnswer:
         return []
 
@@ -103,12 +103,15 @@ class CapReq(object):
         self.failure = failure or nop
         self.success = success or nop
 
+    # @property
+    # @deprecated(  # Removed deprecated decorator
+    #     reason='use the `plugin` property instead',
+    #     version='7.1',
+    #     removed_in='8.0',
+    # )
+    # def module(self):  # Removed deprecated property
+    #     return self.plugin
     @property
-    @deprecated(
-        reason='use the `plugin` property instead',
-        version='7.1',
-        removed_in='8.0',
-    )
     def module(self):
         return self.plugin
 

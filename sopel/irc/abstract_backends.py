@@ -44,7 +44,7 @@ class AbstractIRCBackend(object):
         """
         raise NotImplementedError
 
-    def send_command(self, *args, **kwargs):
+    def send_command(self, *args, text=None):
         """Send a command through the IRC connection.
 
         :param args: IRC command to send with its argument(s)
@@ -64,11 +64,11 @@ class AbstractIRCBackend(object):
             This will call the :meth:`sopel.bot.Sopel.on_message_sent`
             callback on the bot instance with the raw message sent.
         """
-        raw_command = self.prepare_command(*args, text=kwargs.get('text'))
+        raw_command = self.prepare_command(*args, text=text)
         self.irc_send(raw_command.encode('utf-8'))
         self.bot.on_message_sent(raw_command)
 
-    def prepare_command(self, *args, **kwargs):
+    def prepare_command(self, *args, text=None):
         """Prepare an IRC command from ``args`` and optional ``text``.
 
         :param list args: list of text, arguments of the IRC command to send
@@ -92,7 +92,6 @@ class AbstractIRCBackend(object):
         The returned message contains the CR-LF pair required at the end,
         and can be sent as-is.
         """
-        text = kwargs.get('text')
         max_length = unicode_max_length = 510
         raw_command = ' '.join(args)
         if text is not None:

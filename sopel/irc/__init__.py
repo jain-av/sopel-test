@@ -32,26 +32,20 @@ import sys
 import threading
 import time
 
-try:
-    import ssl
-    if not hasattr(ssl, 'match_hostname'):
-        # Attempt to import ssl_match_hostname from python-backports
-        # TODO: Remove when dropping Python 2 support
-        import backports.ssl_match_hostname
-        ssl.match_hostname = backports.ssl_match_hostname.match_hostname
-        ssl.CertificateError = backports.ssl_match_hostname.CertificateError
-    has_ssl = True
-except ImportError:
-    # no SSL support
-    has_ssl = False
+import ssl
+if not hasattr(ssl, 'match_hostname'):
+    # Attempt to import ssl_match_hostname from python-backports
+    # TODO: Remove when dropping Python 2 support
+    import backports.ssl_match_hostname
+    ssl.match_hostname = backports.ssl_match_hostname.match_hostname
+    ssl.CertificateError = backports.ssl_match_hostname.CertificateError
+has_ssl = True
 
 from sopel import tools, trigger
 from .backends import AsynchatBackend, SSLAsynchatBackend
 from .isupport import ISupport
 from .utils import CapReq, safe
 
-if sys.version_info.major >= 3:
-    unicode = str
 
 __all__ = ['abstract_backends', 'backends', 'utils']
 
@@ -292,7 +286,7 @@ class AbstractBot(object):
         self.last_error_timestamp = datetime.utcnow()
         self.error_count = self.error_count + 1
 
-    def change_current_nick(self, new_nick):
+    def change_current_nick(self, new_nick: str):
         """Change the current nick without configuration modification.
 
         :param str new_nick: new nick to be used by the bot
@@ -327,7 +321,7 @@ class AbstractBot(object):
         """
         raise NotImplementedError
 
-    def log_raw(self, line, prefix):
+    def log_raw(self, line: str, prefix: str):
         """Log a raw line to the raw log.
 
         :param str line: the raw line
@@ -341,8 +335,9 @@ class AbstractBot(object):
         logger = logging.getLogger('sopel.raw')
         logger.info('\t'.join([prefix, line.strip()]))
 
-    def cap_req(self, plugin_name, capability, arg=None, failure_callback=None,
-                success_callback=None):
+    def cap_req(self, plugin_name: str, capability: str, arg: str | None = None,
+                failure_callback: Callable[[Sopel, str], None] | None = None,
+                success_callback: Callable[[Sopel, str], None] | None = None):
         """Tell Sopel to request a capability when it starts.
 
         :param str plugin_name: the plugin requesting the capability
@@ -420,7 +415,7 @@ class AbstractBot(object):
                                 success_callback))
             self._cap_reqs[cap] = entry
 
-    def write(self, args, text=None):
+    def write(self, args: Iterable[str], text: str | None = None):
         """Send a command to the server.
 
         :param args: an iterable of strings, which will be joined by spaces
@@ -455,7 +450,7 @@ class AbstractBot(object):
 
     # IRC Commands
 
-    def action(self, text, dest):
+    def action(self, text: str, dest: str):
         """Send a CTCP ACTION PRIVMSG to a user or channel.
 
         :param str text: the text to send in the CTCP ACTION
@@ -466,7 +461,7 @@ class AbstractBot(object):
         """
         self.say('\001ACTION {}\001'.format(text), dest)
 
-    def join(self, channel, password=None):
+    def join(self, channel: str, password: str | None = None):
         """Join a ``channel``.
 
         :param str channel: the channel to join
@@ -479,7 +474,7 @@ class AbstractBot(object):
         """
         self.backend.send_join(channel, password=password)
 
-    def kick(self, nick, channel, text=None):
+    def kick(self, nick: str, channel: str, text: str | None = None):
         """Kick a ``nick`` from a ``channel``.
 
         :param str nick: nick to kick out of the ``channel``
@@ -492,7 +487,7 @@ class AbstractBot(object):
         """
         self.backend.send_kick(channel, nick, reason=text)
 
-    def notice(self, text, dest):
+    def notice(self, text: str, dest: str):
         """Send an IRC NOTICE to a user or channel (``dest``).
 
         :param str text: the text to send in the NOTICE
@@ -500,7 +495,7 @@ class AbstractBot(object):
         """
         self.backend.send_notice(dest, text)
 
-    def part(self, channel, msg=None):
+    def part(self, channel: str, msg: str | None = None):
         """Leave a ``channel``.
 
         :param str channel: the channel to leave
@@ -606,7 +601,7 @@ class AbstractBot(object):
 
         """
         excess = ''
-        if not isinstance(text, unicode):
+        if not isinstance(text, str):
             # Make sure we are dealing with a Unicode string
             text = text.decode('utf-8')
 
@@ -721,7 +716,7 @@ class AbstractBot(object):
                     # If we've already said '...' 3 times, discard message
                     return
 
-            self.backend.send_privmsg(recipient, text)
+            self.write(('PRIVMSG', recipient), text)
             recipient_stack['flood_left'] = max(0, recipient_stack['flood_left'] - 1)
             recipient_stack['messages'].append((time.time(), safe(text)))
             recipient_stack['messages'] = recipient_stack['messages'][-10:]

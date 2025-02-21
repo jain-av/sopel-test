@@ -347,6 +347,11 @@ class ISupport(object):
         This attribute is not available if the server does not provide the
         right information, and accessing it will raise an
         :exc:`AttributeError`.
+        """
+        if 'PREFIX' not in self:
+            raise AttributeError('PREFIX')
+
+        return dict(self['PREFIX'])
 
         .. seealso::
 
