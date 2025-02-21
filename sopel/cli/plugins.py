@@ -293,6 +293,301 @@ def handle_show(options):
         print('Loading failed')
         return ERR_CODE
 
+# coding=utf-8
+"""Sopel Plugins Command Line Interface (CLI): ``sopel-plugins``"""
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import argparse
+import inspect
+import operator
+
+from sopel import config, plugins, tools
+from . import utils
+
+
+ERR_CODE = 1
+"""Error code: program exited with an error"""
+
+
+def build_parser():
+    """Configure an argument parser for ``sopel-plugins``.
+
+    :return: the argument parser
+    :rtype: :class:`argparse.ArgumentParser`
+    """
+    parser = argparse.ArgumentParser(
+        description='Sopel plugins tool')
+
+    # Subparser: sopel-plugins <sub-parser> <sub-options>
+    subparsers = parser.add_subparsers(
+        help='Action to perform',
+        dest='action')
+
+    # sopel-plugins show <name>
+    show_parser = subparsers.add_parser(
+        'show',
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Show plugin details",
+        description="Show detailed information about a plugin.")
+    utils.add_common_arguments(show_parser)
+    show_parser.add_argument('name', help='Plugin name')
+
+    # sopel-plugins configure <name>
+    config_parser = subparsers.add_parser(
+        'configure',
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Configure plugin with a config wizard",
+        description=inspect.cleandoc("""
+            Run a config wizard to configure a plugin.
+
+            This can be used whether the plugin is enabled or not.
+        """))
+    utils.add_common_arguments(config_parser)
+    config_parser.add_argument('name', help='Plugin name')
+
+    # sopel-plugins list
+    list_parser = subparsers.add_parser(
+        'list',
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="List available Sopel plugins",
+        description=inspect.cleandoc("""
+            List available Sopel plugins from all possible sources.
+
+            Plugin sources are: built-in, from ``sopel_modules.*``,
+            from ``sopel.plugins`` entry points, or Sopel's plugin directories.
+
+            Enabled plugins are displayed in green; disabled, in red.
+        """))
+    utils.add_common_arguments(list_parser)
+    list_parser.add_argument(
+        '-C', '--no-color',
+        help='Disable colors',
+        dest='no_color',
+        action='store_true',
+        default=False)
+    list_enable = list_parser.add_mutually_exclusive_group(required=False)
+    list_enable.add_argument(
+        '-e', '--enabled-only',
+        help='Display only enabled plugins',
+        dest='enabled_only',
+        action='store_true',
+        default=False)
+    list_enable.add_argument(
+        '-d', '--disabled-only',
+        help='Display only disabled plugins',
+        dest='disabled_only',
+        action='store_true',
+        default=False)
+    list_parser.add_argument(
+        '-n', '--name-only',
+        help='Display only plugin names',
+        dest='name_only',
+        action='store_true',
+        default=False)
+
+    # sopel-plugins disable
+    disable_parser = subparsers.add_parser(
+        'disable',
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Disable a Sopel plugins",
+        description=inspect.cleandoc("""
+            Disable a Sopel plugin by its name, no matter where it comes from.
+
+            It is not possible to disable the ``coretasks`` plugin.
+        """))
+    utils.add_common_arguments(disable_parser)
+    disable_parser.add_argument(
+        'names', metavar='name', nargs='+',
+        help=inspect.cleandoc("""
+            Name of the plugin to disable.
+            Can be used multiple times to disable multiple plugins at once.
+            In case of error, configuration is not modified.
+        """))
+    disable_parser.add_argument(
+        '-f', '--force', action='store_true', default=False,
+        help=inspect.cleandoc("""
+            Force exclusion of the plugin.
+            When ``core.enable`` is defined, a plugin may be disabled without
+            being excluded. In this case, use this option to force
+            its exclusion.
+        """))
+    disable_parser.add_argument(
+        '-r', '--remove', action='store_true', default=False,
+        help="Remove from ``core.enable`` list if applicable.")
+
+    # sopel-plugins enable
+    enable_parser = subparsers.add_parser(
+        'enable',
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Enable a Sopel plugin",
+        description=inspect.cleandoc("""
+            Enable a Sopel plugin by its name, no matter where it comes from.
+
+            The ``coretasks`` plugin is always enabled.
+
+            By default, a plugin that is not excluded is enabled, unless at
+            least one plugin is defined in the ``core.enable`` list.
+            In that case, Sopel uses an "allow-only" policy for plugins, and
+            all desired plugins must be added to this list.
+        """))
+    utils.add_common_arguments(enable_parser)
+    enable_parser.add_argument(
+        'names', metavar='name', nargs='+',
+        help=inspect.cleandoc("""
+            Name of the plugin to enable.
+            Can be used multiple times to enable multiple plugins at once.
+            In case of error, configuration is not modified.
+        """))
+    enable_parser.add_argument(
+        '-a', '--allow-only',
+        dest='allow_only',
+        action='store_true',
+        default=False,
+        help=inspect.cleandoc("""
+            Enforce allow-only policy.
+            It makes sure the plugin is added to the ``core.enable`` list.
+        """))
+
+    return parser
+
+
+def handle_list(options):
+    """List Sopel plugins.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine
+    """
+    settings = utils.load_settings(options)
+    no_color = options.no_color
+    name_only = options.name_only
+    enabled_only = options.enabled_only
+    disabled_only = options.disabled_only
+
+    # get usable plugins
+    items = (
+        (name, info[0], info[1])
+        for name, info in plugins.get_usable_plugins(settings).items()
+    )
+    items = (
+        (name, plugin, is_enabled)
+        for name, plugin, is_enabled in items
+    )
+    # filter on enabled/disabled if required
+    if enabled_only:
+        items = (
+            (name, plugin, is_enabled)
+            for name, plugin, is_enabled in items
+            if is_enabled
+        )
+    elif disabled_only:
+        items = (
+            (name, plugin, is_enabled)
+            for name, plugin, is_enabled in items
+            if not is_enabled
+        )
+    # sort plugins
+    items = sorted(items, key=operator.itemgetter(0))
+
+    for name, plugin, is_enabled in items:
+        description = {
+            'name': name,
+            'status': 'enabled' if is_enabled else 'disabled',
+        }
+
+        # optional meta description from the plugin itself
+        try:
+            plugin.load()
+            description.update(plugin.get_meta_description())
+
+            # colorize name for display purpose
+            if not no_color:
+                if is_enabled:
+                    description['name'] = utils.green(name)
+                else:
+                    description['name'] = utils.red(name)
+        except Exception as error:
+            description.update(plugin.get_meta_description())
+
+            meta_label = description.get('label') or '(error)'
+            error_label = ('%s' % error) or 'unknown loading exception'
+            label = '%s (error: %s)' % (meta_label, error_label)
+            error_status = 'error'
+
+            description.update({
+                'label': label,
+                'status': error_status,
+            })
+            if not no_color:
+                if is_enabled:
+                    # yellow instead of green
+                    description['name'] = utils.yellow(name)
+                else:
+                    # keep it red for disabled plugins
+                    description['name'] = utils.red(name)
+                description['status'] = utils.red(error_status)
+
+        template = '{name}/{type} {label} ({source}) [{status}]'
+        if name_only:
+            template = '{name}'
+
+        print(template.format(**description))
+
+    return 0  # successful operation
+
+
+def handle_show(options):
+    """Show plugin details.
+
+    :param options: parsed arguments
+    :type options: :class:`argparse.Namespace`
+    :return: 0 if everything went fine;
+             1 if the plugin doesn't exist or can't be loaded
+    """
+    plugin_name = options.name
+    settings = utils.load_settings(options)
+    usable_plugins = plugins.get_usable_plugins(settings)
+
+    # plugin does not exist
+    if plugin_name not in usable_plugins:
+        tools.stderr('No plugin named %s' % plugin_name)
+        return ERR_CODE
+
+    plugin, is_enabled = usable_plugins[plugin_name]
+    description = {
+        'name': plugin_name,
+        'status': 'enabled' if is_enabled else 'disabled',
+    }
+
+    # optional meta description from the plugin itself
+    loaded = False
+    try:
+        plugin.load()
+        description.update(plugin.get_meta_description())
+        loaded = True
+    except Exception as error:
+        description.update(plugin.get_meta_description())
+
+        meta_label = description.get('label') or '(error)'
+        error_label = ('%s' % error) or 'unknown loading exception'
+        label = '%s (error: %s)' % (meta_label, error_label)
+        error_status = 'error'
+
+        description.update({
+            'label': label,
+            'status': error_status,
+        })
+
+    print('Plugin:', description['name'])
+    print('Status:', description['status'])
+    print('Type:', description['type'])
+    print('Source:', description['source'])
+    print('Label:', description['label'])
+
+    if not loaded:
+        print('Loading failed')
+        return ERR_CODE
+
     print('Loaded successfully')
     print('Setup:', 'yes' if plugin.has_setup() else 'no')
     print('Shutdown:', 'yes' if plugin.has_shutdown() else 'no')
