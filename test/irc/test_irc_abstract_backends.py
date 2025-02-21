@@ -2,7 +2,6 @@
 """Tests for core ``sopel.irc.backends``"""
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-
 from sopel.irc.abstract_backends import AbstractIRCBackend
 from sopel.tests.mocks import MockIRCBackend
 

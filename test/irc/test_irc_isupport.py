@@ -376,7 +376,6 @@ def test_parse_parameter_chanlimit_many():
     assert key == 'CHANLIMIT'
     assert value == (('#', 50), ('$', 10))
 
-
 def test_parse_parameter_chanlimit_limit_optional():
     key, value = isupport.parse_parameter('CHANLIMIT=#:50,$:10,~:')
 
