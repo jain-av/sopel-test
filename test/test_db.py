@@ -10,6 +10,8 @@ import os
 import tempfile
 
 import pytest
+from sqlalchemy.engine import make_url
+from sqlalchemy.sql import func, select, text
 
 from sopel.db import (
     ChannelValues,
@@ -48,7 +50,6 @@ def teardown_function(function):
 def test_get_nick_id(db):
     """Test get_nick_id does not create NickID by default."""
     nick = Identifier('Exirel')
-    session = db.session()
 
     # Attempt to get nick ID: it is not created by default
     with pytest.raises(ValueError):
@@ -58,13 +59,12 @@ def test_get_nick_id(db):
     nick_id = db.get_nick_id(nick, create=True)
 
     # Check that one and only one nickname exists with that ID
-    nickname = session.query(Nicknames).filter(
-        Nicknames.nick_id == nick_id,
-    ).one()  # will raise if not one and exactly one
+    with db.session() as session:
+        nickname = session.execute(
+            select(Nicknames).where(Nicknames.nick_id == nick_id)
+        ).scalar_one()  # will raise if not one and exactly one
     assert nickname.canonical == 'Exirel'
     assert nickname.slug == nick.lower()
-
-    session.close()
 
 
 @pytest.mark.parametrize('name, slug, variant', (
@@ -77,15 +77,16 @@ def test_get_nick_id(db):
 ))
 def test_get_nick_id_casemapping(db, name, slug, variant):
     """Test get_nick_id is case-insensitive through an Identifier."""
-    session = db.session()
     nick = Identifier(name)
 
     # Create the nick ID
     nick_id = db.get_nick_id(nick, create=True)
 
-    registered = session.query(Nicknames) \
-                        .filter(Nicknames.canonical == name) \
-                        .all()
+    with db.session() as session:
+        registered = session.execute(
+            select(Nicknames).where(Nicknames.canonical == name)
+        ).scalars().fetchall()
+
     assert len(registered) == 1
     assert registered[0].slug == slug
     assert registered[0].canonical == name
@@ -99,14 +100,18 @@ def test_get_nick_id_casemapping(db, name, slug, variant):
     # And no other nick IDs are created (even with create=True)
     assert nick_id == db.get_nick_id(name, create=True)
     assert nick_id == db.get_nick_id(variant, create=True)
-    assert 1 == session.query(NickIDs).count()
+    with db.session() as session:
+        assert 1 == session.scalar(
+            select(func.count()).select_from(NickIDs)
+        )
 
     # But a truly different name means a new nick ID
     new_nick_id = db.get_nick_id(name + '_test', create=True)
     assert new_nick_id != nick_id
-    assert 2 == session.query(NickIDs).count()
-
-    session.close()
+    with db.session() as session:
+        assert 2 == session.scalar(
+            select(func.count()).select_from(NickIDs)
+        )
 
 
 def test_alias_nick(db):
@@ -130,7 +135,6 @@ def test_alias_nick(db):
 
 
 def test_set_nick_value(db):
-    session = db.ssession()
     nick = 'Embolalia'
     data = {
         'key': 'value',
@@ -146,10 +150,12 @@ def test_set_nick_value(db):
         nick_id = db.get_nick_id(nick)
 
         for key, value in data.items():
-            found_value = session.query(NickValues.value) \
-                                 .filter(NickValues.nick_id == nick_id) \
-                                 .filter(NickValues.key == key) \
-                                 .scalar()
+            with db.session() as session:
+                found_value = session.scalar(
+                    select(NickValues.value)
+                    .where(NickValues.nick_id == nick_id)
+                    .where(NickValues.key == key)
+                )
             assert json.loads(str(found_value)) == value
 
         return nick_id
@@ -160,7 +166,6 @@ def test_set_nick_value(db):
     data['number_key'] = 'not a number anymore!'
     data['unicode'] = 'This is different toö!'
     assert nid == check()
-    session.close()
 
 
 def test_get_nick_value(db):
@@ -175,13 +180,14 @@ def test_get_nick_value(db):
 
     for key, value in data.items():
         nv = NickValues(nick_id=nick_id, key=key, value=json.dumps(value, ensure_ascii=False))
-        session.add(nv)
-        session.commit()
+        with db.session() as session:
+            session.add(nv)
+            session.commit()
 
     for key, value in data.items():
-        found_value = db.get_nick_value(nick, key)
+        with db.session() as session:
+            found_value = db.get_nick_value(nick, key)
         assert found_value == value
-    session.close()
 
 
 def test_get_nick_value_default(db):
@@ -203,28 +209,30 @@ def test_unalias_nick(db):
     nick_id = 42
 
     nn = Nicknames(nick_id=nick_id, slug=Identifier(nick).lower(), canonical=nick)
-    session.add(nn)
-    session.commit()
+    with db.session() as session:
+        session.add(nn)
+        session.commit()
 
     aliases = ['EmbölaliÅ', 'Embo`work', 'Embo']
     for alias in aliases:
         nn = Nicknames(nick_id=nick_id, slug=Identifier(alias).lower(), canonical=alias)
-        session.add(nn)
-        session.commit()
+        with db.session() as session:
+            session.add(nn)
+            session.commit()
 
     for alias in aliases:
         db.unalias_nick(alias)
 
     for alias in aliases:
-        found = session.query(Nicknames) \
-                       .filter(Nicknames.nick_id == nick_id) \
-                       .all()
+        with db.session() as session:
+            found = session.scalars(
+                select(Nicknames)
+                .where(Nicknames.nick_id == nick_id)
+            ).all()
         assert len(found) == 1
 
     with pytest.raises(ValueError):
         db.unalias_nick('Mister_Bradshaw')
-
-    session.close()
 
 
 def test_forget_nick_group(db):
@@ -284,14 +292,15 @@ def test_merge_nick_groups(db):
 
 
 def test_set_channel_value(db):
-    session = db.ssession()
     db.set_channel_value('#asdf', 'qwer', 'zxcv')
-    result = session.query(ChannelValues.value) \
-                    .filter(ChannelValues.channel == '#asdf') \
-                    .filter(ChannelValues.key == 'qwer') \
-                    .scalar()
+    with db.session() as session:
+        result = session.scalar(
+            select(ChannelValues.value)
+            .where(ChannelValues.channel == '#asdf')
+            .where(ChannelValues.key == 'qwer')
+        )
     assert result == '"zxcv"'
-    session.close()
+
 
 
 def test_delete_channel_value(db):
@@ -302,15 +311,13 @@ def test_delete_channel_value(db):
 
 
 def test_get_channel_value(db):
-    session = db.ssession()
-
     cv = ChannelValues(channel='#asdf', key='qwer', value='\"zxcv\"')
-    session.add(cv)
-    session.commit()
+    with db.session() as session:
+        session.add(cv)
+        session.commit()
 
     result = db.get_channel_value('#asdf', 'qwer')
     assert result == 'zxcv'
-    session.close()
 
 
 def test_forget_channel(db):
@@ -350,26 +357,24 @@ def test_get_preferred_value(db):
 
 
 def test_set_plugin_value(db):
-    session = db.ssession()
     db.set_plugin_value('plugname', 'qwer', 'zxcv')
-    result = session.query(PluginValues.value) \
-                    .filter(PluginValues.plugin == 'plugname') \
-                    .filter(PluginValues.key == 'qwer') \
-                    .scalar()
-    assert result == '"zxcv"'
-    session.close()
+    with db.session() as session:
+        result = session.scalar(
+            select(PluginValues.value)
+            .where(PluginValues.plugin == 'plugname')
+            .where(PluginValues.key == 'qwer')
+        )
+        assert result == '"zxcv"'
 
 
 def test_get_plugin_value(db):
-    session = db.ssession()
-
     pv = PluginValues(plugin='plugname', key='qwer', value='\"zxcv\"')
-    session.add(pv)
-    session.commit()
+    with db.session() as session:
+        session.add(pv)
+        session.commit()
 
     result = db.get_plugin_value('plugname', 'qwer')
     assert result == 'zxcv'
-    session.close()
 
 
 def test_get_plugin_value_default(db):
