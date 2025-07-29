@@ -10,7 +10,7 @@ import typing
 from sqlalchemy import Column, create_engine, ForeignKey, Integer, String
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import scoped_session, sessionmaker
 
 from sopel.tools import deprecated
@@ -36,7 +36,12 @@ def _deserialize(value):
     return value
 
 
-BASE = declarative_base()
+class Base(DeclarativeBase):
+    """SQLAlchemy declarative base class."""
+    pass
+
+
+BASE = Base
 MYSQL_TABLE_ARGS = {'mysql_engine': 'InnoDB',
                     'mysql_charset': 'utf8mb4',
                     'mysql_collate': 'utf8mb4_unicode_ci'}
