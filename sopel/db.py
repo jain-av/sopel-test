@@ -36,7 +36,9 @@ def _deserialize(value):
     return value
 
 
-BASE = declarative_base()
+class BASE(DeclarativeBase):
+    """Base class for all SQLAlchemy ORM models."""
+    pass
 MYSQL_TABLE_ARGS = {'mysql_engine': 'InnoDB',
                     'mysql_charset': 'utf8mb4',
                     'mysql_collate': 'utf8mb4_unicode_ci'}
