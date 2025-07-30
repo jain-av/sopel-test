@@ -10,7 +10,7 @@ import typing
 from sqlalchemy import Column, create_engine, ForeignKey, Integer, String
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import scoped_session, sessionmaker
 
 from sopel.tools import deprecated
