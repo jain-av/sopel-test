@@ -8,6 +8,7 @@ import traceback
 import typing
 
 from sqlalchemy import Column, create_engine, delete, ForeignKey, Integer, select, String, text, update
+from sqlalchemy.engine import Result
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, scoped_session, sessionmaker
@@ -251,7 +252,7 @@ class SopelDB:
         """
         return self.ssession()
 
-    def execute(self, *args, **kwargs):
+    def execute(self, *args, **kwargs) -> Result:
         """Execute an arbitrary SQL query against the database.
 
         :return: the query results
@@ -259,8 +260,21 @@ class SopelDB:
 
         The ``Result`` object returned is a wrapper around a ``Cursor`` object
         as specified by :pep:`249`.
+        
+        .. versionchanged:: 8.1
+            Replaced deprecated ``engine.execute()`` with ``session.execute()``
+            for SQLAlchemy 2.0 compatibility.
         """
-        return self.engine.execute(*args, **kwargs)
+        session = self.ssession()
+        try:
+            result = session.execute(*args, **kwargs)
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def get_uri(self):
         """Return a direct URL for the database.
