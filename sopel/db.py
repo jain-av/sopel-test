@@ -53,6 +53,7 @@ MYSQL_TABLE_ARGS = {
 class NickIDs(BASE):
     """Nick IDs table SQLAlchemy class."""
     __tablename__ = 'nick_ids'
+    __table_args__ = MYSQL_TABLE_ARGS
     nick_id: Mapped[int] = Column(Integer, primary_key=True)
     
     def __repr__(self) -> str:
