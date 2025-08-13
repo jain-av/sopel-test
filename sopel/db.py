@@ -7,11 +7,14 @@ import os.path
 import traceback
 import typing
 
-from sqlalchemy import Column, create_engine, ForeignKey, Integer, String
+# SQLAlchemy 2.0 migration: Updated imports to use modern patterns
+# - declarative_base moved from sqlalchemy.ext.declarative to sqlalchemy.orm
+# - Added Session import for modern session management
+# - Added select import for new query syntax
+from sqlalchemy import Column, create_engine, ForeignKey, Integer, String, select
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker, Session
 
 from sopel.tools import deprecated
 from sopel.tools.identifiers import Identifier
