@@ -14,6 +14,6 @@ sphinxcontrib-autoprogram==0.1.7
 vcrpy
 # type check
 mypy>=0.920,<1
-sqlalchemy[mypy]>=1.4,<1.5
+sqlalchemy[mypy]>=1.4,<3.0
 types-pytz
 types-requests>=2,<3
