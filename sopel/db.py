@@ -12,6 +12,7 @@ import typing
 # - Added Session import for modern session management
 # - Added select import for new query syntax
 from sqlalchemy import Column, create_engine, ForeignKey, Integer, String, select
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker, Session
@@ -48,43 +49,43 @@ MYSQL_TABLE_ARGS = {'mysql_engine': 'InnoDB',
 class NickIDs(BASE):
     """Nick IDs table SQLAlchemy class."""
     __tablename__ = 'nick_ids'
-    nick_id = Column(Integer, primary_key=True)
+    nick_id: Mapped[int] = Column(Integer, primary_key=True)
 
 
 class Nicknames(BASE):
     """Nicknames table SQLAlchemy class."""
     __tablename__ = 'nicknames'
     __table_args__ = MYSQL_TABLE_ARGS
-    nick_id = Column(Integer, ForeignKey('nick_ids.nick_id'), primary_key=True)
-    slug = Column(String(255), primary_key=True)
-    canonical = Column(String(255))
+    nick_id: Mapped[int] = Column(Integer, ForeignKey('nick_ids.nick_id'), primary_key=True)
+    slug: Mapped[str] = Column(String(255), primary_key=True)
+    canonical: Mapped[str] = Column(String(255))
 
 
 class NickValues(BASE):
     """Nick values table SQLAlchemy class."""
     __tablename__ = 'nick_values'
     __table_args__ = MYSQL_TABLE_ARGS
-    nick_id = Column(Integer, ForeignKey('nick_ids.nick_id'), primary_key=True)
-    key = Column(String(255), primary_key=True)
-    value = Column(String(255))
+    nick_id: Mapped[int] = Column(Integer, ForeignKey('nick_ids.nick_id'), primary_key=True)
+    key: Mapped[str] = Column(String(255), primary_key=True)
+    value: Mapped[typing.Optional[str]] = Column(String(255))
 
 
 class ChannelValues(BASE):
     """Channel values table SQLAlchemy class."""
     __tablename__ = 'channel_values'
     __table_args__ = MYSQL_TABLE_ARGS
-    channel = Column(String(255), primary_key=True)
-    key = Column(String(255), primary_key=True)
-    value = Column(String(255))
+    channel: Mapped[str] = Column(String(255), primary_key=True)
+    key: Mapped[str] = Column(String(255), primary_key=True)
+    value: Mapped[typing.Optional[str]] = Column(String(255))
 
 
 class PluginValues(BASE):
     """Plugin values table SQLAlchemy class."""
     __tablename__ = 'plugin_values'
     __table_args__ = MYSQL_TABLE_ARGS
-    plugin = Column(String(255), primary_key=True)
-    key = Column(String(255), primary_key=True)
-    value = Column(String(255))
+    plugin: Mapped[str] = Column(String(255), primary_key=True)
+    key: Mapped[str] = Column(String(255), primary_key=True)
+    value: Mapped[typing.Optional[str]] = Column(String(255))
 
 
 class SopelDB:
