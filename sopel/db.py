@@ -41,15 +41,22 @@ def _deserialize(value):
 
 
 BASE = declarative_base()
-MYSQL_TABLE_ARGS = {'mysql_engine': 'InnoDB',
-                    'mysql_charset': 'utf8mb4',
-                    'mysql_collate': 'utf8mb4_unicode_ci'}
+# SQLAlchemy 2.0 compatible MySQL table arguments
+# These settings ensure proper UTF-8 support and optimal performance for MySQL
+MYSQL_TABLE_ARGS = {
+    'mysql_engine': 'InnoDB',
+    'mysql_charset': 'utf8mb4', 
+    'mysql_collate': 'utf8mb4_unicode_ci'
+}
 
 
 class NickIDs(BASE):
     """Nick IDs table SQLAlchemy class."""
     __tablename__ = 'nick_ids'
     nick_id: Mapped[int] = Column(Integer, primary_key=True)
+    
+    def __repr__(self) -> str:
+        return f"<NickIDs(nick_id={self.nick_id})>"
 
 
 class Nicknames(BASE):
@@ -59,6 +66,9 @@ class Nicknames(BASE):
     nick_id: Mapped[int] = Column(Integer, ForeignKey('nick_ids.nick_id'), primary_key=True)
     slug: Mapped[str] = Column(String(255), primary_key=True)
     canonical: Mapped[str] = Column(String(255))
+    
+    def __repr__(self) -> str:
+        return f"<Nicknames(nick_id={self.nick_id}, slug='{self.slug}', canonical='{self.canonical}')>"
 
 
 class NickValues(BASE):
@@ -68,6 +78,9 @@ class NickValues(BASE):
     nick_id: Mapped[int] = Column(Integer, ForeignKey('nick_ids.nick_id'), primary_key=True)
     key: Mapped[str] = Column(String(255), primary_key=True)
     value: Mapped[typing.Optional[str]] = Column(String(255))
+    
+    def __repr__(self) -> str:
+        return f"<NickValues(nick_id={self.nick_id}, key='{self.key}', value='{self.value}')>"
 
 
 class ChannelValues(BASE):
@@ -77,6 +90,9 @@ class ChannelValues(BASE):
     channel: Mapped[str] = Column(String(255), primary_key=True)
     key: Mapped[str] = Column(String(255), primary_key=True)
     value: Mapped[typing.Optional[str]] = Column(String(255))
+    
+    def __repr__(self) -> str:
+        return f"<ChannelValues(channel='{self.channel}', key='{self.key}', value='{self.value}')>"
 
 
 class PluginValues(BASE):
@@ -86,6 +102,9 @@ class PluginValues(BASE):
     plugin: Mapped[str] = Column(String(255), primary_key=True)
     key: Mapped[str] = Column(String(255), primary_key=True)
     value: Mapped[typing.Optional[str]] = Column(String(255))
+    
+    def __repr__(self) -> str:
+        return f"<PluginValues(plugin='{self.plugin}', key='{self.key}', value='{self.value}')>"
 
 
 class SopelDB:
