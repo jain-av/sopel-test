@@ -7,6 +7,10 @@ import os.path
 import traceback
 import typing
 
+# SQLAlchemy 2.0 migration: Updated imports to use modern patterns
+# - declarative_base moved from sqlalchemy.ext.declarative to sqlalchemy.orm
+# - Added Session import for modern session management
+# - Added select import for new query syntax
 from sqlalchemy import Column, create_engine, ForeignKey, Integer, String, select
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
