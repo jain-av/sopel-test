@@ -7,11 +7,10 @@ import os.path
 import traceback
 import typing
 
-from sqlalchemy import Column, create_engine, ForeignKey, Integer, String
+from sqlalchemy import Column, create_engine, ForeignKey, Integer, String, text, select
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, scoped_session, sessionmaker
 
 from sopel.tools import deprecated
 from sopel.tools.identifiers import Identifier
