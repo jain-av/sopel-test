@@ -36,19 +36,22 @@ def _deserialize(value):
     return value
 
 
-BASE = declarative_base()
+class Base(DeclarativeBase):
+    pass
+
+
 MYSQL_TABLE_ARGS = {'mysql_engine': 'InnoDB',
                     'mysql_charset': 'utf8mb4',
                     'mysql_collate': 'utf8mb4_unicode_ci'}
 
 
-class NickIDs(BASE):
+class NickIDs(Base):
     """Nick IDs table SQLAlchemy class."""
     __tablename__ = 'nick_ids'
     nick_id = Column(Integer, primary_key=True)
 
 
-class Nicknames(BASE):
+class Nicknames(Base):
     """Nicknames table SQLAlchemy class."""
     __tablename__ = 'nicknames'
     __table_args__ = MYSQL_TABLE_ARGS
@@ -57,7 +60,7 @@ class Nicknames(BASE):
     canonical = Column(String(255))
 
 
-class NickValues(BASE):
+class NickValues(Base):
     """Nick values table SQLAlchemy class."""
     __tablename__ = 'nick_values'
     __table_args__ = MYSQL_TABLE_ARGS
@@ -66,7 +69,7 @@ class NickValues(BASE):
     value = Column(String(255))
 
 
-class ChannelValues(BASE):
+class ChannelValues(Base):
     """Channel values table SQLAlchemy class."""
     __tablename__ = 'channel_values'
     __table_args__ = MYSQL_TABLE_ARGS
@@ -75,7 +78,7 @@ class ChannelValues(BASE):
     value = Column(String(255))
 
 
-class PluginValues(BASE):
+class PluginValues(Base):
     """Plugin values table SQLAlchemy class."""
     __tablename__ = 'plugin_values'
     __table_args__ = MYSQL_TABLE_ARGS
@@ -194,7 +197,7 @@ class SopelDB:
             raise
 
         # Create our tables
-        BASE.metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine)
 
         self.ssession = scoped_session(sessionmaker(bind=self.engine))
 
