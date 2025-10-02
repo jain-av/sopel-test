@@ -8,9 +8,10 @@ import traceback
 import typing
 
 from sqlalchemy import Column, create_engine, ForeignKey, Integer, String
+from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session
 from sqlalchemy.orm import scoped_session, sessionmaker
 
 from sopel.tools import deprecated
@@ -118,6 +119,11 @@ class SopelDB:
 
     """
 
+    engine: Engine
+    ssession: scoped_session[Session]
+    url: URL
+    type: str
+
     def __init__(
         self,
         config,
@@ -185,7 +191,11 @@ class SopelDB:
                            password=db_pass, host=db_host, port=db_port,
                            database=db_name, query=query)
 
-        self.engine = create_engine(self.url, pool_recycle=3600)
+        self.engine = create_engine(
+            self.url,
+            pool_recycle=3600,
+            future=True  # Enable SQLAlchemy 2.0 behavior
+        )
 
         # Catch any errors connecting to database
         try:
@@ -197,7 +207,12 @@ class SopelDB:
         # Create our tables
         Base.metadata.create_all(self.engine)
 
-        self.ssession = scoped_session(sessionmaker(bind=self.engine))
+        self.ssession = scoped_session(
+            sessionmaker(
+                bind=self.engine,
+                future=True  # Enable SQLAlchemy 2.0 behavior for sessions
+            )
+        )
 
     def connect(self):
         """Get a direct database connection.
@@ -260,7 +275,8 @@ class SopelDB:
         The ``Result`` object returned is a wrapper around a ``Cursor`` object
         as specified by :pep:`249`.
         """
-        return self.engine.execute(*args, **kwargs)
+        with self.ssession() as session:
+            return session.execute(*args, **kwargs)
 
     def get_uri(self):
         """Return a direct URL for the database.
