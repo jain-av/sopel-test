@@ -1,37 +1,48 @@
-# SQLAlchemy 2.0 Engine and Session Configuration Migration
-Updated database layer to use modern SQLAlchemy 2.0 patterns for engine creation and session management.
+# SQLAlchemy 2.0 Query API Migration to Modern Syntax
+Migrated all database queries from legacy Query API to modern SQLAlchemy 2.0 `select()`, `delete()`, and `update()` statement syntax.
 
 # Associated PRs
-- Step 2.2 of SQLAlchemy 2.0 migration runbook
+- Step 2.3 of SQLAlchemy 2.0 migration runbook
 
 # When to use
-This migration pattern applies when updating any SQLAlchemy-based database layer from 1.4.x to 2.0+ versions.
+This migration pattern applies when updating any SQLAlchemy-based database layer from legacy Query API to modern 2.0 syntax.
 
 # Important files
-- sopel/db.py - Main database layer implementation
+- sopel/db.py - Main database layer implementation with all query methods updated
 
 # Learnings
-- Replace deprecated `engine.execute()` calls with `session.execute()` pattern for SQLAlchemy 2.0 compatibility
-- Add `future=True` flag to both `create_engine()` and `sessionmaker()` to enable SQLAlchemy 2.0 behavior
-- Import `Engine` and `Session` types from `sqlalchemy.engine` and `sqlalchemy.orm` respectively for proper type hints
-- Use `scoped_session[Session]` type hint for better type safety
-- The `with self.ssession() as session:` pattern is preferred for automatic session management
-- Modern SQLAlchemy 2.0 configuration maintains backward compatibility while enabling new features
-- Type hints for `engine: Engine`, `ssession: scoped_session[Session]`, `url: URL`, and `type: str` improve code clarity
-- Session-based execute method is more consistent with SQLAlchemy 2.0 patterns than engine-based execution
-- Using `future=True` enables proper 2.0 behavior while maintaining 1.4 compatibility during transition period
+- Replace all `session.query(Model)` calls with `session.execute(select(Model))` pattern
+- Use `select().where()` instead of `.query().filter()` for conditional queries
+- Import `select`, `delete`, `update`, and `func` from `sqlalchemy` for modern query construction
+- Use `func.count()` with `select()` and `.scalar()` for counting operations instead of `.query().count()`
+- Delete operations use `session.execute(delete(Model).where(condition))` syntax
+- Update operations use `session.execute(update(Model).where(condition).values(field=value))` syntax
+- Complex queries with joins require explicit table relationships in `where()` clauses
+- Modern syntax maintains same result semantics while being more explicit and type-safe
+- All query results maintain the same return types and behavior as legacy Query API
+- Session management patterns remain unchanged - only query construction syntax changes
 
 ## Migration Steps Applied
-1. Added proper imports: `from sqlalchemy.engine import Engine` and `from sqlalchemy.orm import Session`
-2. Added type hints to SopelDB class attributes
-3. Updated `engine.execute()` to use session-based execution pattern
-4. Added `future=True` flag to engine creation for SQLAlchemy 2.0 behavior
-5. Added `future=True` flag to sessionmaker for consistent 2.0 session behavior
-6. Maintained all existing functionality while modernizing the implementation
+1. Added modern SQLAlchemy imports: `select`, `delete`, `update`, `func`
+2. Updated `get_nick_id()` method to use `select().where()` syntax
+3. Updated `alias_nick()` method to use modern query patterns with combined conditions
+4. Updated `set_nick_value()` method to use `select()` for existence checks
+5. Updated `delete_nick_value()` method to use modern select pattern
+6. Updated `get_nick_value()` method including complex join conditions
+7. Updated `unalias_nick()` method with count operations using `func.count()` and delete operations
+8. Updated `forget_nick_group()` method to use `delete()` statements
+9. Updated `merge_nick_groups()` method with complex queries and `update()` operations
+10. Updated all channel-related methods (`get_channel_slug`, `set_channel_value`, `delete_channel_value`, `get_channel_value`, `forget_channel`)
+11. Updated all plugin-related methods (`set_plugin_value`, `delete_plugin_value`, `get_plugin_value`, `forget_plugin`)
+12. Verified Python syntax compilation successfully
 
-## Best Practices
-- Always enable `future=True` when migrating to SQLAlchemy 2.0
-- Use proper type hints to catch potential issues early
-- Prefer session-based operations over direct engine operations
-- Maintain backward compatibility during migration phase
-- Test with both SQLAlchemy 1.4 and 2.0 to ensure compatibility
+## Best Practices for SQLAlchemy 2.0 Query Migration
+- Always use `session.execute()` with constructed statements instead of `session.query()`
+- Use `select().where()` for filtering instead of `.query().filter()`
+- Combine multiple conditions with `&` (and) or `|` (or) operators in `where()` clauses
+- Use `func.count()` with `.scalar()` for count operations
+- Use modern `delete()` and `update()` statement constructors for data modification
+- Maintain explicit table relationships in join conditions
+- Modern syntax is more explicit and provides better type safety
+- Test query result compatibility to ensure same behavior as legacy Query API
+- Prefer specific query construction over dynamic query building for better performance

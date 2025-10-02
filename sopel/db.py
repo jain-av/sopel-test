@@ -7,7 +7,7 @@ import os.path
 import traceback
 import typing
 
-from sqlalchemy import Column, create_engine, ForeignKey, Integer, String
+from sqlalchemy import Column, create_engine, delete, ForeignKey, func, Integer, select, String, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url, URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -318,15 +318,17 @@ class SopelDB:
         session = self.ssession()
         slug = self.make_identifier(nick).lower()
         try:
-            nickname = session.query(Nicknames) \
-                .filter(Nicknames.slug == slug) \
-                .one_or_none()
+            result = session.execute(
+                select(Nicknames).where(Nicknames.slug == slug)
+            )
+            nickname = result.one_or_none()
 
             if nickname is None:
                 # see if it needs case-mapping migration
-                nickname = session.query(Nicknames) \
-                    .filter(Nicknames.slug == Identifier._lower_swapped(nick)) \
-                    .one_or_none()
+                result = session.execute(
+                    select(Nicknames).where(Nicknames.slug == Identifier._lower_swapped(nick))
+                )
+                nickname = result.one_or_none()
                 if nickname is not None:
                     # it does!
                     nickname.slug = slug
@@ -375,10 +377,11 @@ class SopelDB:
         nick_id = self.get_nick_id(nick, create=True)
         session = self.ssession()
         try:
-            result = session.query(Nicknames) \
-                .filter(Nicknames.slug == slug) \
-                .filter(Nicknames.canonical == alias) \
-                .one_or_none()
+            result = session.execute(
+                select(Nicknames).where(
+                    (Nicknames.slug == slug) & (Nicknames.canonical == alias)
+                )
+            ).one_or_none()
             if result:
                 raise ValueError('Alias already exists.')
             nickname = Nicknames(
@@ -419,10 +422,11 @@ class SopelDB:
         nick_id = self.get_nick_id(nick, create=True)
         session = self.ssession()
         try:
-            result = session.query(NickValues) \
-                .filter(NickValues.nick_id == nick_id) \
-                .filter(NickValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(NickValues).where(
+                    (NickValues.nick_id == nick_id) & (NickValues.key == key)
+                )
+            ).one_or_none()
             # NickValue exists, update
             if result:
                 result.value = value
@@ -465,10 +469,11 @@ class SopelDB:
 
         session = self.ssession()
         try:
-            result = session.query(NickValues) \
-                .filter(NickValues.nick_id == nick_id) \
-                .filter(NickValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(NickValues).where(
+                    (NickValues.nick_id == nick_id) & (NickValues.key == key)
+                )
+            ).one_or_none()
             # NickValue exists, delete
             if result:
                 session.delete(result)
@@ -509,11 +514,13 @@ class SopelDB:
         slug = self.make_identifier(nick).lower()
         session = self.ssession()
         try:
-            result = session.query(NickValues) \
-                .filter(Nicknames.nick_id == NickValues.nick_id) \
-                .filter(Nicknames.slug == slug) \
-                .filter(NickValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(NickValues).where(
+                    (Nicknames.nick_id == NickValues.nick_id) &
+                    (Nicknames.slug == slug) &
+                    (NickValues.key == key)
+                )
+            ).one_or_none()
             if result is not None:
                 result = result.value
             elif default is not None:
@@ -544,12 +551,14 @@ class SopelDB:
         nick_id = self.get_nick_id(alias)
         session = self.ssession()
         try:
-            count = session.query(Nicknames) \
-                .filter(Nicknames.nick_id == nick_id) \
-                .count()
-            if count <= 1:
+            count_result = session.execute(
+                select(func.count(Nicknames.nick_id)).where(Nicknames.nick_id == nick_id)
+            ).scalar()
+            if count_result <= 1:
                 raise ValueError('Given alias is the only entry in its group.')
-            session.query(Nicknames).filter(Nicknames.slug == slug).delete()
+            session.execute(
+                delete(Nicknames).where(Nicknames.slug == slug)
+            )
             session.commit()
         except SQLAlchemyError:
             session.rollback()
@@ -573,8 +582,12 @@ class SopelDB:
         nick_id = self.get_nick_id(nick)
         session = self.ssession()
         try:
-            session.query(Nicknames).filter(Nicknames.nick_id == nick_id).delete()
-            session.query(NickValues).filter(NickValues.nick_id == nick_id).delete()
+            session.execute(
+                delete(Nicknames).where(Nicknames.nick_id == nick_id)
+            )
+            session.execute(
+                delete(NickValues).where(NickValues.nick_id == nick_id)
+            )
             session.commit()
         except SQLAlchemyError:
             session.rollback()
@@ -615,19 +628,24 @@ class SopelDB:
         session = self.ssession()
         try:
             # Get second_id's values
-            res = session.query(NickValues).filter(NickValues.nick_id == second_id).all()
+            res = session.execute(
+                select(NickValues).where(NickValues.nick_id == second_id)
+            ).all()
             # Update first_id with second_id values if first_id doesn't have that key
             for row in res:
-                first_res = session.query(NickValues) \
-                    .filter(NickValues.nick_id == first_id) \
-                    .filter(NickValues.key == row.key) \
-                    .one_or_none()
+                first_res = session.execute(
+                    select(NickValues).where(
+                        (NickValues.nick_id == first_id) & (NickValues.key == row.key)
+                    )
+                ).one_or_none()
                 if not first_res:
                     self.set_nick_value(first_nick, row.key, _deserialize(row.value))
-            session.query(NickValues).filter(NickValues.nick_id == second_id).delete()
-            session.query(Nicknames) \
-                .filter(Nicknames.nick_id == second_id) \
-                .update({'nick_id': first_id})
+            session.execute(
+                delete(NickValues).where(NickValues.nick_id == second_id)
+            )
+            session.execute(
+                update(Nicknames).where(Nicknames.nick_id == second_id).values(nick_id=first_id)
+            )
             session.commit()
         except SQLAlchemyError:
             session.rollback()
@@ -651,18 +669,24 @@ class SopelDB:
         slug = self.make_identifier(chan).lower()
         session = self.ssession()
         try:
-            count = session.query(ChannelValues) \
-                .filter(ChannelValues.channel == slug) \
-                .count()
+            count = session.execute(
+                select(func.count(ChannelValues.channel)).where(ChannelValues.channel == slug)
+            ).scalar()
 
             if count == 0:
                 # see if it needs case-mapping migration
-                old_rows = session.query(ChannelValues) \
-                    .filter(ChannelValues.channel == Identifier._lower_swapped(chan))
-                old_count = old_rows.count()
+                old_count = session.execute(
+                    select(func.count(ChannelValues.channel)).where(
+                        ChannelValues.channel == Identifier._lower_swapped(chan)
+                    )
+                ).scalar()
                 if old_count > 0:
                     # it does!
-                    old_rows.update({ChannelValues.channel: slug})
+                    session.execute(
+                        update(ChannelValues)
+                        .where(ChannelValues.channel == Identifier._lower_swapped(chan))
+                        .values(channel=slug)
+                    )
                     session.commit()
 
             return slug
@@ -702,10 +726,11 @@ class SopelDB:
         value = json.dumps(value, ensure_ascii=False)
         session = self.ssession()
         try:
-            result = session.query(ChannelValues) \
-                .filter(ChannelValues.channel == channel)\
-                .filter(ChannelValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(ChannelValues).where(
+                    (ChannelValues.channel == channel) & (ChannelValues.key == key)
+                )
+            ).one_or_none()
             # ChannelValue exists, update
             if result:
                 result.value = value
@@ -743,10 +768,11 @@ class SopelDB:
         channel = self.get_channel_slug(channel)
         session = self.ssession()
         try:
-            result = session.query(ChannelValues) \
-                .filter(ChannelValues.channel == channel)\
-                .filter(ChannelValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(ChannelValues).where(
+                    (ChannelValues.channel == channel) & (ChannelValues.key == key)
+                )
+            ).one_or_none()
             # ChannelValue exists, delete
             if result:
                 session.delete(result)
@@ -787,10 +813,11 @@ class SopelDB:
         channel = self.get_channel_slug(channel)
         session = self.ssession()
         try:
-            result = session.query(ChannelValues) \
-                .filter(ChannelValues.channel == channel)\
-                .filter(ChannelValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(ChannelValues).where(
+                    (ChannelValues.channel == channel) & (ChannelValues.key == key)
+                )
+            ).one_or_none()
             if result is not None:
                 result = result.value
             elif default is not None:
@@ -816,7 +843,9 @@ class SopelDB:
         channel = self.get_channel_slug(channel)
         session = self.ssession()
         try:
-            session.query(ChannelValues).filter(ChannelValues.channel == channel).delete()
+            session.execute(
+                delete(ChannelValues).where(ChannelValues.channel == channel)
+            )
             session.commit()
         except SQLAlchemyError:
             session.rollback()
@@ -856,10 +885,11 @@ class SopelDB:
         value = json.dumps(value, ensure_ascii=False)
         session = self.ssession()
         try:
-            result = session.query(PluginValues) \
-                .filter(PluginValues.plugin == plugin)\
-                .filter(PluginValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(PluginValues).where(
+                    (PluginValues.plugin == plugin) & (PluginValues.key == key)
+                )
+            ).one_or_none()
             # PluginValue exists, update
             if result:
                 result.value = value
@@ -893,10 +923,11 @@ class SopelDB:
         plugin = plugin.lower()
         session = self.ssession()
         try:
-            result = session.query(PluginValues) \
-                .filter(PluginValues.plugin == plugin)\
-                .filter(PluginValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(PluginValues).where(
+                    (PluginValues.plugin == plugin) & (PluginValues.key == key)
+                )
+            ).one_or_none()
             # PluginValue exists, update
             if result:
                 session.delete(result)
@@ -937,10 +968,11 @@ class SopelDB:
         plugin = plugin.lower()
         session = self.ssession()
         try:
-            result = session.query(PluginValues) \
-                .filter(PluginValues.plugin == plugin)\
-                .filter(PluginValues.key == key) \
-                .one_or_none()
+            result = session.execute(
+                select(PluginValues).where(
+                    (PluginValues.plugin == plugin) & (PluginValues.key == key)
+                )
+            ).one_or_none()
             if result is not None:
                 result = result.value
             elif default is not None:
@@ -966,7 +998,9 @@ class SopelDB:
         plugin = plugin.lower()
         session = self.ssession()
         try:
-            session.query(PluginValues).filter(PluginValues.plugin == plugin).delete()
+            session.execute(
+                delete(PluginValues).where(PluginValues.plugin == plugin)
+            )
             session.commit()
         except SQLAlchemyError:
             session.rollback()
