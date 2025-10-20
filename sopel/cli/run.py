@@ -1,4 +1,39 @@
-"""
+"""Sopel CLI Entry Point - Bot Execution and Lifecycle Management
+
+This module serves as the main entry point for running Sopel IRC bot instances
+from the command line. It handles bot startup, daemon mode operation, signal
+handling for graceful shutdown/restart, and automatic reconnection after
+disconnection.
+
+**Key Responsibilities:**
+
+* Command-line argument parsing for start/stop/restart/configure commands
+* Bot process lifecycle management (PID file handling, forking for daemon mode)
+* Signal handling for QUIT (SIGTERM, SIGINT, SIGUSR1) and RESTART (SIGUSR2, SIGILL)
+* Automatic reconnection with exponential backoff after unexpected disconnections
+* Error recovery and logging for critical failures
+
+**Signal Handling Behavior:**
+
+Sopel registers handlers for two types of signals:
+
+* **QUIT_SIGNALS** (SIGTERM, SIGINT, SIGUSR1): Gracefully shut down the bot
+  - If connected: sends QUIT message to IRC server, then exits
+  - If disconnected: sets hasquit flag and raises KeyboardInterrupt
+  - Used by ``sopel stop`` command (SIGUSR1 on Unix, SIGTERM on Windows)
+
+* **RESTART_SIGNALS** (SIGUSR2, SIGILL): Restart the bot process
+  - If connected: sends QUIT message, then restarts via exec
+  - If disconnected: sets wantsrestart + hasquit flags and raises KeyboardInterrupt
+  - Used by ``sopel restart`` command (SIGUSR2 on Unix, SIGILL on Windows)
+
+**Process Management:**
+
+* ``sopel start``: Starts a new bot instance (foreground or daemon with -d/--fork)
+* ``sopel stop``: Sends SIGUSR1/SIGTERM to running instance
+* ``sopel restart``: Sends SIGUSR2/SIGILL to running instance
+* ``sopel configure``: Runs configuration wizard (no bot startup)
+
 Sopel - An IRC Bot
 Copyright 2008, Sean B. Palmer, inamidst.com
 Copyright © 2012-2014, Elad Alfassa <elad@fedoraproject.org>
@@ -55,7 +90,59 @@ def run(settings, pid_file, daemon=False):
     :type settings: :class:`sopel.config.Config`
     :param str pid_file: path to the bot's PID file
     :param bool daemon: tell if the bot should be run as a daemon
+    :return: ``-1`` if the bot wants to restart, ``None`` otherwise
+    :rtype: int or None
+
+    This is the main bot execution loop that handles the complete lifecycle
+    of a Sopel instance:
+
+    **Startup Flow:**
+
+    1. Display version information and loaded configuration file
+    2. Check SSL certificate configuration
+    3. Create and setup the bot instance (:class:`~sopel.bot.Sopel`)
+    4. Register signal handlers for graceful shutdown/restart
+    5. Connect to IRC server and start main event loop
+
+    **Error Recovery:**
+
+    * **Setup errors**: Critical errors during bot initialization will be logged
+      and propagated up, preventing the bot from starting
+    * **Runtime errors**: Exceptions during bot operation are logged, the PID
+      file is cleaned up, and the process exits with code 1
+    * **Keyboard interrupts**: Gracefully exit the reconnection loop
+
+    **Automatic Reconnection:**
+
+    After an unexpected disconnection (network issue, server restart, etc.),
+    the bot will automatically attempt to reconnect after a 20-second delay.
+    The reconnection loop continues until:
+
+    * ``p.hasquit`` is set (QUIT signal received or explicit quit command)
+    * ``p.wantsrestart`` is set (RESTART signal received), returns ``-1``
+    * A KeyboardInterrupt occurs (Ctrl+C)
+
+    **Daemon Mode:**
+
+    When ``daemon=True``, the bot runs in daemon mode (detached from terminal).
+    In this mode, signal handlers are the primary way to control the bot:
+
+    * Send SIGUSR1/SIGTERM to stop: ``sopel stop``
+    * Send SIGUSR2/SIGILL to restart: ``sopel restart``
+
+    .. note::
+
+        This function uses ``os._exit()`` instead of ``sys.exit()`` or ``return``
+        to terminate the process. This is a workaround for an issue where
+        returning normally causes the bot to hang on Ctrl+C (KeyboardInterrupt).
+
+    .. seealso::
+
+        Signal handlers are registered by :meth:`sopel.bot.Sopel.set_signal_handlers`,
+        which sets up handlers for QUIT_SIGNALS and RESTART_SIGNALS.
+
     """
+    # Reconnection delay in seconds (fixed at 20s after any disconnection)
     delay = 20
 
     # Acts as a welcome message, showing the program and platform version at start
@@ -67,14 +154,19 @@ def run(settings, pid_file, daemon=False):
         tools.stderr(
             'Could not open CA certificates file. SSL will not work properly!')
 
-    # Define empty variable `p` for bot
+    # Define empty variable `p` for bot instance (used across reconnection loop)
     p = None
     while True:
-        if p and p.hasquit:  # Check if `hasquit` was set for bot during disconnected phase
+        # Check if hasquit was set during disconnected phase (signal handler called while offline)
+        # This prevents reconnection attempts after the user requested shutdown
+        if p and p.hasquit:
             break
         try:
+            # Create new bot instance for each connection attempt
             p = bot.Sopel(settings, daemon=daemon)
             p.setup()
+            # Register signal handlers (QUIT_SIGNALS: SIGTERM/SIGINT/SIGUSR1, RESTART_SIGNALS: SIGUSR2/SIGILL)
+            # These handlers will set p.hasquit and/or p.wantsrestart flags when signals are received
             p.set_signal_handlers()
         except KeyboardInterrupt:
             tools.stderr('Bot setup interrupted')
@@ -90,10 +182,13 @@ def run(settings, pid_file, daemon=False):
             raise
 
         try:
+            # Start the main bot event loop - this blocks until disconnection or quit
             p.run(settings.core.host, int(settings.core.port))
         except KeyboardInterrupt:
+            # User pressed Ctrl+C - exit gracefully without reconnecting
             break
         except Exception:
+            # Critical runtime exception during bot operation
             err_log = logging.getLogger('sopel.exceptions')
             err_log.exception('Critical exception in core')
             err_log.error('----------------------------------------')
@@ -105,12 +200,17 @@ def run(settings, pid_file, daemon=False):
             os.unlink(pid_file)
             os._exit(1)
 
+        # Bot has disconnected - check if we should reconnect or exit
         if not isinstance(delay, int):
+            # delay was changed to non-int (should not happen normally) - exit
             break
         if p.wantsrestart:
+            # RESTART signal received (SIGUSR2/SIGILL) - return -1 to trigger full process restart
             return -1
         if p.hasquit:
+            # QUIT signal received (SIGTERM/SIGINT/SIGUSR1) or explicit quit command - exit cleanly
             break
+        # Unexpected disconnection (network issue, server restart, etc.) - reconnect after delay
         LOGGER.warning('Disconnected. Reconnecting in %s seconds...', delay)
         time.sleep(delay)
     # TODO: This should be handled by command_start
@@ -327,6 +427,41 @@ def command_start(opts):
 
     :param opts: parsed arguments
     :type opts: :class:`argparse.Namespace`
+    :return: error code if startup fails, ``None`` on clean exit
+    :rtype: int or None
+
+    This command orchestrates the complete bot startup process:
+
+    **Startup Process:**
+
+    1. **Configuration Loading**: Load settings from config file, run wizard if needed
+    2. **PID File Management**: Check for existing instance, create PID file
+    3. **Daemon Mode** (optional): Fork process if ``--daemonize``/``-d`` flag is set
+    4. **Bot Execution**: Call :func:`run` to start the main bot loop
+    5. **Cleanup**: Remove PID file after bot exits
+
+    **Daemon Mode (--daemonize / -d flag):**
+
+    When ``--daemonize`` is specified, the bot forks and runs in the background.
+    The parent process exits immediately, while the child continues running.
+    Control in daemon mode:
+
+    * ``sopel stop``: Sends SIGUSR1/SIGTERM to stop the background bot
+    * ``sopel restart``: Sends SIGUSR2/SIGILL to restart the background bot
+
+    **Restart Handling:**
+
+    If :func:`run` returns ``-1`` (restart requested), this function uses
+    ``os.execv()`` to replace the current process with a new Sopel instance,
+    preserving the same command-line arguments and configuration.
+
+    .. note::
+
+        The bot checks for an existing instance before starting. If another
+        Sopel process is already running with the same config file, startup
+        will fail with ERR_CODE. Use ``sopel restart`` to restart a running
+        instance instead.
+
     """
     # Step One: Get the configuration file and prepare to run
     try:
@@ -352,24 +487,28 @@ def command_start(opts):
         return ERR_CODE
 
     if opts.daemonize:
+        # Fork to create daemon process (parent exits, child continues in background)
         child_pid = os.fork()
         if child_pid != 0:
+            # Parent process: exit immediately, child runs in background
             return
 
+    # Write current process ID to file for use by stop/restart commands
     with open(pid_file_path, 'w') as pid_file:
         pid_file.write(str(os.getpid()))
 
-    # Step Three: Run Sopel
-    ret = run(settings, pid_file_path)
+    # Step Three: Run Sopel (blocks until bot exits or restart requested)
+    ret = run(settings, pid_file_path, daemon=opts.daemonize)
 
     # Step Four: Shutdown Clean-Up
     os.unlink(pid_file_path)
 
     if ret == -1:
-        # Restart
+        # Restart requested (SIGUSR2/SIGILL received or .restart command used)
+        # Replace current process with new Sopel instance using same arguments
         os.execv(sys.executable, ['python'] + sys.argv)
     else:
-        # Quit
+        # Normal exit (QUIT signal, .quit command, or error)
         return ret
 
 
@@ -391,6 +530,33 @@ def command_stop(opts):
 
     :param opts: parsed arguments
     :type opts: :class:`argparse.Namespace`
+    :return: error code if the operation fails, ``None`` on success
+    :rtype: int or None
+
+    This command sends a QUIT signal to a running Sopel instance identified
+    by its PID file. The signal sent depends on the platform:
+
+    * **Unix/Linux/macOS**: Sends SIGUSR1 for graceful shutdown
+    * **Windows**: Sends SIGTERM (Windows doesn't support SIGUSR1)
+
+    **Signal Behavior:**
+
+    When the bot receives a QUIT signal:
+
+    * If **connected**: Sends ``QUIT`` message to IRC server, then exits
+    * If **disconnected**: Sets ``hasquit`` flag and raises KeyboardInterrupt
+
+    **Kill Option:**
+
+    The ``--kill`` flag (``-k``) sends SIGKILL instead, which immediately
+    terminates the bot without cleanup. This should only be used if the
+    bot is unresponsive to normal shutdown signals.
+
+    .. seealso::
+
+        The actual signal handling is performed by :meth:`sopel.bot.Sopel._signal_handler`,
+        which is registered by :meth:`sopel.bot.Sopel.set_signal_handlers`.
+
     """
     # Get Configuration
     try:
@@ -416,14 +582,19 @@ def command_stop(opts):
 
     # Stop Sopel
     if opts.kill:
+        # Force kill without cleanup (SIGKILL cannot be caught)
         tools.stderr('Killing the Sopel')
         os.kill(pid, signal.SIGKILL)
         return
 
+    # Send graceful shutdown signal
     tools.stderr('Signaling Sopel to stop gracefully')
     if hasattr(signal, 'SIGUSR1'):
+        # Unix/Linux/macOS: Send SIGUSR1 (registered as a QUIT_SIGNAL)
+        # This will trigger _signal_handler() which sends QUIT to IRC and exits
         os.kill(pid, signal.SIGUSR1)
     else:
+        # Windows doesn't support SIGUSR1, use SIGTERM instead
         # Windows will not generate SIGTERM itself
         # https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/signal
         os.kill(pid, signal.SIGTERM)
@@ -434,6 +605,36 @@ def command_restart(opts):
 
     :param opts: parsed arguments
     :type opts: :class:`argparse.Namespace`
+    :return: error code if the operation fails, ``None`` on success
+    :rtype: int or None
+
+    This command sends a RESTART signal to a running Sopel instance identified
+    by its PID file. The signal sent depends on the platform:
+
+    * **Unix/Linux/macOS**: Sends SIGUSR2 for graceful restart
+    * **Windows**: Sends SIGILL (Windows doesn't support SIGUSR2)
+
+    **Signal Behavior:**
+
+    When the bot receives a RESTART signal:
+
+    * If **connected**: Sends ``QUIT`` message to IRC server, then restarts
+    * If **disconnected**: Sets ``wantsrestart`` + ``hasquit`` flags and raises KeyboardInterrupt
+
+    The restart is implemented by the :func:`run` function returning ``-1``,
+    which causes :func:`command_start` to call ``os.execv()`` to replace the
+    current process with a new Sopel instance using the same configuration.
+
+    **Restart vs Stop:**
+
+    * ``sopel restart``: Full process restart (reload code, config, plugins)
+    * ``sopel stop`` then ``sopel start``: Same effect but manual
+
+    .. seealso::
+
+        The actual signal handling is performed by :meth:`sopel.bot.Sopel._signal_handler`,
+        which is registered by :meth:`sopel.bot.Sopel.set_signal_handlers`.
+
     """
     # Get Configuration
     try:
@@ -457,10 +658,15 @@ def command_restart(opts):
         tools.stderr('Sopel is not running!')
         return ERR_CODE
 
+    # Send restart signal to trigger bot reload
     tools.stderr('Asking Sopel to restart')
     if hasattr(signal, 'SIGUSR2'):
+        # Unix/Linux/macOS: Send SIGUSR2 (registered as a RESTART_SIGNAL)
+        # This will trigger _signal_handler() which sends QUIT to IRC,
+        # sets wantsrestart=True, and causes run() to return -1 for exec restart
         os.kill(pid, signal.SIGUSR2)
     else:
+        # Windows doesn't support SIGUSR2, use SIGILL instead
         # Windows will not generate SIGILL itself
         # https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/signal
         os.kill(pid, signal.SIGILL)
