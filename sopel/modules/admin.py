@@ -167,14 +167,6 @@ def _join(bot, channel, key=None, save=True):
     :param str channel: Channel name to join (e.g., "#example")
     :param str key: Optional channel key/password
     :param bool save: Whether to persist the channel to config (default: True)
-
-    Example::
-
-        _join(bot, '#example', 'secretkey', save=True)
-        # Bot joins #example with key and adds it to config
-
-        _join(bot, '#temporary', save=False)
-        # Bot joins #temporary but won't rejoin on restart
     """
     if not channel:
         return
@@ -293,10 +285,6 @@ def temporary_join(bot, trigger):
 
     * ``#channel`` - Channel name to join (required)
     * ``key`` - Channel password/key (optional)
-
-    **Examples:**
-        * ``.tmpjoin #test`` - Temporarily join #test
-        * ``.tmpjoin #private secretkey`` - Temporarily join password-protected channel
 
     **Error conditions:**
 
