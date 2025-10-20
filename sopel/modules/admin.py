@@ -197,14 +197,6 @@ def _part(bot, channel, msg=None, save=True):
     :param str channel: Channel name to leave (e.g., "#example")
     :param str msg: Optional part message to send
     :param bool save: Whether to remove the channel from config (default: True)
-
-    Example::
-
-        _part(bot, '#example', 'Goodbye!', save=True)
-        # Bot leaves #example with message and removes from config
-
-        _part(bot, '#temporary', save=False)
-        # Bot leaves #temporary but will rejoin on restart
     """
     bot.part(channel, msg or None)
 
