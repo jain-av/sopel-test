@@ -22,13 +22,32 @@ IdentifierFactory = typing.Callable[[str], Identifier]
 
 
 def _deserialize(value):
+    """Deserialize a value retrieved from the database.
+
+    :param value: the raw value from the database (may be None, str, int, etc.)
+    :return: the deserialized Python object, or the original value if not JSON
+
+    SQLite's dynamic typing may return integer types for string columns when
+    the stored value is numeric. This function normalizes such values to
+    strings before attempting JSON deserialization.
+
+    Values that are not valid JSON are returned as strings unchanged. This
+    handles cases where data may have been inserted directly into the database
+    without going through Sopel's JSON serialization layer.
+
+    .. note::
+
+        This is an internal helper function. Plugin authors should not need
+        to call this directly.
+
+    """
     if value is None:
         return None
-    # sqlite likes to return ints for strings that look like ints, even though
-    # the column type is string. That's how you do dynamic typing wrong.
+    # SQLite's type affinity may return integers for numeric strings in
+    # STRING columns; normalize to string before JSON deserialization
     value = str(value)
-    # Just in case someone's mucking with the DB in a way we can't account for,
-    # ignore json parsing errors
+    # Attempt JSON deserialization; if it fails (e.g., due to direct database
+    # manipulation bypassing normal serialization), return the string as-is
     try:
         value = json.loads(value)
     except ValueError:
@@ -85,7 +104,7 @@ class PluginValues(BASE):
 
 
 class SopelDB:
-    """Database object class.
+    """Database object class providing persistent key-value storage.
 
     :param config: Sopel's configuration settings
     :type config: :class:`sopel.config.Config`
@@ -99,6 +118,43 @@ class SopelDB:
 
     When configured to use SQLite with a relative filename, the file is assumed
     to be in the directory named by the core setting ``homedir``.
+
+    **Database vs. bot.memory**
+
+    The database provides persistent storage that survives bot restarts, while
+    ``bot.memory`` is an in-memory dictionary that is cleared when the bot
+    stops. Use the database for:
+
+    - User preferences and settings that should persist across sessions
+    - Historical data, statistics, or logs
+    - Any data that would be expensive or impossible to rebuild
+
+    Use ``bot.memory`` for:
+
+    - Temporary state during command processing
+    - Rate limiting or flood protection tracking
+    - Caches of data that can be easily regenerated
+    - Cross-plugin communication within a single session
+
+    Example usage::
+
+        # Store a user's timezone preference (persistent)
+        bot.db.set_nick_value(nick, 'timezone', 'America/New_York')
+
+        # Retrieve it later (even after bot restart)
+        tz = bot.db.get_nick_value(nick, 'timezone', default='UTC')
+
+        # Store temporary state (in-memory, cleared on restart)
+        bot.memory['last_seen'][nick] = datetime.now()
+
+    **Thread Safety**
+
+    All database operations use SQLAlchemy's ``scoped_session``, which provides
+    thread-local session management. Each method call manages its own session
+    lifecycle (begin, commit, rollback, close), making individual operations
+    thread-safe. However, if you need atomicity across multiple operations,
+    you should use :meth:`session` to get a session object and manage the
+    transaction yourself.
 
     .. versionadded:: 5.0
 
@@ -255,6 +311,7 @@ class SopelDB:
 
         :return: the query results
         :rtype: :class:`sqlalchemy.engine.Result`
+        :raise ~sqlalchemy.exc.SQLAlchemyError: if there is a database error
 
         The ``Result`` object returned is a wrapper around a ``Cursor`` object
         as specified by :pep:`249`.
@@ -625,6 +682,7 @@ class SopelDB:
 
         :param channel: the channel name to normalize, with prefix (required)
         :return: the case-normalized channel name (or "slug" representation)
+        :raise ~sqlalchemy.exc.SQLAlchemyError: if there is a database error
 
         This is useful to make sure that a channel name is stored consistently
         in both the bot's own database and third-party plugins'
