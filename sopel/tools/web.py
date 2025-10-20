@@ -40,7 +40,13 @@ __all__ = [
 USER_AGENT = 'Sopel/{} (https://sopel.chat)'.format(__version__)
 """User agent string to be sent with HTTP requests.
 
-Meant to be passed like so::
+This constant contains a properly formatted User-Agent string following the
+format ``"Sopel/VERSION (PROJECT_URL)"``, which identifies the bot software
+and version to web servers. Using a descriptive User-Agent helps server
+administrators identify legitimate bot traffic and is considered polite HTTP
+etiquette.
+
+Example usage with the ``requests`` library::
 
     import requests
 
@@ -50,6 +56,10 @@ Meant to be passed like so::
         'https://some.site/api/endpoint',
         user_agent=web.USER_AGENT
     )
+
+.. note::
+    The version number is automatically populated from ``sopel.__version__``
+    at import time.
 
 """
 DEFAULT_HEADERS = {'User-Agent': USER_AGENT}
@@ -138,14 +148,30 @@ def decode(text):
 def quote(string, safe='/'):
     """Safely encodes a string for use in a URL.
 
-    :param str string: the string to encode
-    :param str safe: a list of characters that should not be quoted; defaults
-                     to ``'/'``
-    :return str: the ``string`` with special characters URL-encoded
+    :param str string: the string to encode; will be converted to string if not
+                       already
+    :param str safe: characters that should not be percent-encoded; defaults to
+                     ``'/'`` to preserve path separators. Common values include
+                     ``''`` (encode everything) or ``'/='`` (preserve paths and
+                     query parameter separators)
+    :return str: the ``string`` with special characters percent-encoded using
+                 UTF-8 encoding (e.g., spaces become ``%20``, ``&`` becomes
+                 ``%26``)
+
+    This function uses UTF-8 encoding to convert characters to percent-encoded
+    format per :rfc:`3986`. ASCII letters, digits, and the characters
+    ``_.-~`` are never encoded, along with any characters specified in the
+    ``safe`` parameter.
+
+    Example::
+
+        quote("hello world")  # Returns: "hello%20world"
+        quote("path/to/file", safe='')  # Returns: "path%2Fto%2Ffile"
+        quote("key=value", safe='=')  # Returns: "key=value"
 
     .. note::
-        This is a shim to make writing cross-compatible plugins for both
-        Python 2 and Python 3 easier.
+        This is a convenient wrapper around :py:func:`urllib.parse.quote`.
+
     """
     # TODO deprecated?
     return urllib.parse.quote(str(string), safe)
@@ -153,14 +179,28 @@ def quote(string, safe='/'):
 
 # six-like shim for Unicode safety
 def unquote(string):
-    """Decodes a URL-encoded string.
+    """Decodes a URL-encoded (percent-encoded) string.
 
-    :param str string: the string to decode
-    :return str: the decoded ``string``
+    :param str string: the percent-encoded string to decode (e.g.,
+                       ``"hello%20world"``)
+    :return str: the decoded ``string`` with percent-encoded sequences replaced
+                 by their corresponding UTF-8 characters
+
+    This function decodes percent-encoded sequences (e.g., ``%20``, ``%26``) back
+    to their original UTF-8 characters. It handles UTF-8 multi-byte sequences
+    correctly.
+
+    Example::
+
+        unquote("hello%20world")  # Returns: "hello world"
+        unquote("path%2Fto%2Ffile")  # Returns: "path/to/file"
+        unquote("caf%C3%A9")  # Returns: "café"
 
     .. note::
 
-        This is a convenient shortcut for ``urllib.parse.unquote``.
+        This is a convenient wrapper around :py:func:`urllib.parse.unquote`,
+        which always uses UTF-8 encoding for decoding percent-encoded sequences.
+
     """
     # TODO deprecated?
     return urllib.parse.unquote(string)
@@ -180,13 +220,67 @@ def quote_query(string):
 # Functions for international domain name magic
 
 def urlencode_non_ascii(b):
-    """Safely encodes non-ASCII characters in a URL."""
+    """Percent-encodes non-ASCII bytes in a URL component.
+
+    :param bytes b: a byte string representing a URL component
+    :return bytes: the byte string with non-ASCII bytes (0x80-0xFF)
+                   percent-encoded
+
+    This helper function is used by :py:func:`iri_to_uri` to encode non-ASCII
+    bytes in URL components (path, query, fragment) that have been UTF-8
+    encoded. It converts each byte with value 128 or higher into percent-encoded
+    form (e.g., byte ``0xC3`` becomes ``b'%c3'``).
+
+    Example::
+
+        urlencode_non_ascii(b'caf\\xc3\\xa9')
+        # Returns: b'caf%c3%a9'
+
+    """
     return re.sub(b'[\x80-\xFF]', lambda c: '%%%02x' % ord(c.group(0)), b)
 
 
 def iri_to_uri(iri):
-    """Decodes an internationalized domain name (IDN)."""
+    """Converts an Internationalized Resource Identifier (IRI) to a URI.
+
+    :param str iri: an IRI that may contain non-ASCII characters (e.g.,
+                    Unicode domain names, non-ASCII path segments)
+    :return str: a fully ASCII-compatible URI suitable for use in HTTP requests
+    :raise UnicodeError: if the IRI contains characters that cannot be encoded
+
+    An IRI is the internationalized version of a URI that allows Unicode
+    characters, while a URI must contain only ASCII characters. This function
+    performs the necessary conversions per :rfc:`3987`:
+
+    1. **Domain names** (the netloc/host component): Converted using IDNA
+       encoding (Internationalized Domain Names in Applications). For example,
+       ``"münchen.de"`` becomes ``"xn--mnchen-3ya.de"``.
+
+    2. **Other URL components** (scheme, path, params, query, fragment):
+       Non-ASCII bytes are percent-encoded. For example, ``"café"`` in a path
+       becomes ``"caf%C3%A9"``.
+
+    Example::
+
+        # Internationalized domain name
+        iri_to_uri("http://münchen.de/")
+        # Returns: "http://xn--mnchen-3ya.de/"
+
+        # Unicode in path
+        iri_to_uri("https://example.com/café/menu")
+        # Returns: "https://example.com/caf%C3%A9/menu"
+
+        # Both domain and path
+        iri_to_uri("https://münchen.de/café")
+        # Returns: "https://xn--mnchen-3ya.de/caf%C3%A9"
+
+    .. note::
+        This function is used internally by :py:func:`search_urls` to ensure
+        extracted URLs are in a canonical ASCII form.
+
+    """
     parts = urlparse(iri)
+    # Convert each URL component: IDNA for domain (index 1), percent-encoding for others
     parts_seq = list(
         part.encode('idna')
         if parti == 1 else urlencode_non_ascii(part.encode('utf-8'))

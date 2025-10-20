@@ -368,9 +368,40 @@ def check_pid(pid):
 def get_hostmask_regex(mask):
     """Get a compiled regex pattern for an IRC hostmask
 
-    :param str mask: the hostmask that the pattern should match
+    :param str mask: the hostmask pattern that the regex should match; may
+                     contain wildcards (``*``) that will match any sequence of
+                     characters. Standard format is ``nick!user@host``
     :return: a compiled regex pattern matching the given ``mask``
     :rtype: :ref:`re.Pattern <python:re-objects>`
+
+    IRC hostmasks identify users in the format ``nick!user@host``. This function
+    converts a hostmask pattern (with optional ``*`` wildcards) into a compiled
+    regular expression for efficient matching. The pattern is case-insensitive
+    and anchored to match the entire hostmask.
+
+    Wildcards (``*``) in the mask are converted to ``.*`` regex patterns,
+    allowing flexible matching. All other special regex characters are escaped
+    to match literally.
+
+    Example::
+
+        # Match exact hostmask
+        pattern = get_hostmask_regex("nick!user@example.com")
+        pattern.match("nick!user@example.com")  # Matches
+
+        # Match with wildcards
+        pattern = get_hostmask_regex("*!*@*.example.com")
+        pattern.match("alice!alice@host.example.com")  # Matches
+        pattern.match("bob!bob@other.org")  # Does not match
+
+        # Match all users from a host
+        pattern = get_hostmask_regex("*!*@192.168.1.1")
+        pattern.match("user1!user@192.168.1.1")  # Matches
+
+        # Common pattern: match by nickname only
+        pattern = get_hostmask_regex("alice!*@*")
+        pattern.match("alice!user@anywhere.com")  # Matches
+
     """
     mask = re.escape(mask)
     mask = mask.replace(r'\*', '.*')
