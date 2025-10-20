@@ -122,12 +122,6 @@ def _get_config_channels(channels):
     :param list channels: List of channel strings from ``core.channels``
     :return: Generator yielding ``(channel, key)`` tuples
     :rtype: generator
-
-    Example::
-
-        # Config: channels = #foo, #bar secretkey, #baz
-        list(_get_config_channels(config.core.channels))
-        # Returns: [('#foo', None), ('#bar', 'secretkey'), ('#baz', None)]
     """
     for channel_info in channels:
         if ' ' in channel_info:
