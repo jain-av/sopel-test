@@ -817,7 +817,6 @@ class Sopel(irc.AbstractBot):
         if not trigger.is_privmsg and trigger.sender not in self._times:
             self._times[trigger.sender] = dict()
 
-        # Rate limiting enforcement (admins and unblockable functions bypass)
         if not trigger.admin and not func.unblockable:
             # Check user rate limit: has this user used this function recently?
             if func in self._times[nick]:
