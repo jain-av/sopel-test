@@ -76,6 +76,10 @@ def configure(config):
 class CoreSection(StaticSection):
     """The config section used for configuring the bot itself.
 
+    This section is automatically defined and loaded by Sopel. It contains
+    all the essential settings needed for the bot to connect to IRC and
+    operate properly.
+
     .. important::
 
         All **Required** values must be specified, or Sopel will fail to start.
@@ -84,6 +88,14 @@ class CoreSection(StaticSection):
 
         You can use the command ``sopel configure`` to generate a config file
         with the minimal required options.
+
+    .. seealso::
+
+        :class:`~sopel.config.types.StaticSection` for the base class that this
+        and all other configuration sections inherit from, and
+        :mod:`sopel.config.types` for documentation on the attribute types used
+        to define these settings (e.g., :class:`~sopel.config.types.ListAttribute`,
+        :class:`~sopel.config.types.BooleanAttribute`).
 
     """
 
