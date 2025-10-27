@@ -44,13 +44,31 @@ SIGNALS = QUIT_SIGNALS + RESTART_SIGNALS
 
 class Sopel(irc.AbstractBot):
     def __init__(self, config, daemon=False):
+        """Initialize a Sopel bot instance.
+
+        :param config: the bot's configuration settings
+        :type config: :class:`sopel.config.Config`
+        :param bool daemon: whether the bot is running in daemon mode (optional)
+
+        This creates a new bot instance with all necessary state:
+
+        * Initializes plugin management and rules processing
+        * Sets up the job scheduler for timed tasks
+        * Creates memory stores for runtime data
+        * Initializes database connection
+        * Sets up channel and user tracking
+        """
         super().__init__(config)
         self._daemon = daemon  # Used for iPython. TODO something saner here
         self.wantsrestart = False
+        # Threading state: tracks all running trigger handlers for debugging/testing
         self._running_triggers = []
         self._running_triggers_lock = threading.Lock()
+        # Plugin registry: maps plugin names to handler instances
         self._plugins: Dict[str, Any] = {}
+        # Rules manager: handles pattern matching and dispatching for all callables
         self._rules_manager = plugin_rules.Manager()
+        # Job scheduler: manages periodic tasks and intervals
         self._scheduler = plugin_jobs.Scheduler(self)
 
         self._url_callbacks = tools.SopelMemory()
@@ -284,7 +302,12 @@ class Sopel(irc.AbstractBot):
         self.post_setup()
 
     def setup_logging(self) -> None:
-        """Set up logging based on config options."""
+        """Set up logging based on config options.
+
+        Configures Python's logging system according to the bot's configuration,
+        including log level, format, and optional IRC channel logging. This
+        method is automatically called during :meth:`setup`.
+        """
         logger.setup_logging(self.settings)
         base_level = self.settings.core.logging_level or 'INFO'
         base_format = self.settings.core.logging_format
@@ -309,7 +332,13 @@ class Sopel(irc.AbstractBot):
             LOGGER.addHandler(handler)
 
     def setup_plugins(self) -> None:
-        """Load plugins into the bot."""
+        """Load plugins into the bot.
+
+        Discovers and loads all enabled plugins, calling their setup functions
+        and registering their callables with the bot. This method is
+        automatically called during :meth:`setup`. Failed plugins are logged
+        but do not prevent other plugins from loading.
+        """
         load_success = 0
         load_error = 0
         load_disabled = 0
@@ -515,6 +544,23 @@ class Sopel(irc.AbstractBot):
     # callable management
 
     def register_callables(self, callables: Iterable) -> None:
+        """Register plugin callables with the rules manager.
+
+        :param callables: an iterable of callables to register
+        :type callables: :term:`iterable`
+
+        This processes callables from loaded plugins and registers them with
+        the rules manager based on their decorators:
+
+        * Regular rules (pattern matching)
+        * Find rules and search rules (different regex modes)
+        * Commands (prefix-based)
+        * Nickname commands (bot's nick as prefix)
+        * Action commands (CTCP ACTION triggers)
+
+        Callables with lazy loaders are compiled on-demand. If a callable has
+        no explicit rules or commands, it is registered as a match-all rule.
+        """
         match_any = re.compile(r'.*')
         settings = self.settings
 
@@ -594,20 +640,53 @@ class Sopel(irc.AbstractBot):
                     plugin_rules.Rule.from_callable(self.settings, callbl))
 
     def register_jobs(self, jobs: Iterable) -> None:
+        """Register periodic jobs with the scheduler.
+
+        :param jobs: an iterable of job functions to register
+        :type jobs: :term:`iterable`
+
+        Creates :class:`~sopel.tools.jobs.Job` objects from the provided
+        callables and registers them with the job scheduler for periodic
+        execution.
+        """
         for func in jobs:
             job = tools_jobs.Job.from_callable(self.settings, func)
             self._scheduler.register(job)
 
     def unregister_jobs(self, jobs: Iterable) -> None:
+        """Unregister periodic jobs from the scheduler.
+
+        :param jobs: an iterable of job functions to unregister
+        :type jobs: :term:`iterable`
+
+        Removes the specified job callables from the job scheduler.
+        """
         for job in jobs:
             self._scheduler.remove_callable_job(job)
 
     def register_shutdowns(self, shutdowns: Iterable) -> None:
+        """Register plugin shutdown handlers.
+
+        :param shutdowns: an iterable of shutdown functions to register
+        :type shutdowns: :term:`iterable`
+
+        Appends the provided shutdown functions to the bot's list of methods
+        to call during shutdown. These are invoked in registration order when
+        the bot stops.
+        """
         # Append plugin's shutdown function to the bot's list of functions to
         # call on shutdown
         self.shutdown_methods = self.shutdown_methods + list(shutdowns)
 
     def unregister_shutdowns(self, shutdowns: Iterable) -> None:
+        """Unregister plugin shutdown handlers.
+
+        :param shutdowns: an iterable of shutdown functions to unregister
+        :type shutdowns: :term:`iterable`
+
+        Removes the specified shutdown functions from the bot's list of
+        methods to call during shutdown.
+        """
         self.shutdown_methods = [
             shutdown
             for shutdown in self.shutdown_methods
@@ -615,6 +694,15 @@ class Sopel(irc.AbstractBot):
         ]
 
     def register_urls(self, urls: Iterable) -> None:
+        """Register URL callback handlers.
+
+        :param urls: an iterable of URL callback functions to register
+        :type urls: :term:`iterable`
+
+        Registers functions decorated with :func:`~sopel.plugin.url` to be
+        called when URLs matching their patterns are found in messages.
+        Supports both compiled regex patterns and lazy loaders.
+        """
         for func in urls:
             url_regex = getattr(func, 'url_regex', [])
             url_lazy_loaders = getattr(func, 'url_lazy_loaders', None)
@@ -640,35 +728,53 @@ class Sopel(irc.AbstractBot):
         sopel: 'SopelWrapper',
         trigger: Trigger,
     ) -> None:
-        # rate limiting
+        """Execute a single rule with rate limiting and channel config checks.
+
+        :param rule: the rule to execute
+        :type rule: :class:`sopel.plugins.rules.AbstractRule`
+        :param sopel: a wrapped bot instance for the trigger
+        :type sopel: :class:`SopelWrapper`
+        :param trigger: the trigger that matched this rule
+        :type trigger: :class:`sopel.trigger.Trigger`
+
+        This method enforces rate limits and channel-specific configurations
+        before executing the rule. Admins and unblockable rules bypass rate
+        limiting. Errors during execution are caught and logged.
+        """
+        # Rate limiting: skip execution if limits not met (admins/unblockable bypass)
         if not trigger.admin and not rule.is_unblockable():
+            # Per-user rate limit: prevents single user from spamming
             if rule.is_rate_limited(trigger.nick):
                 return
+            # Channel rate limit: prevents channel-wide spam
             if not trigger.is_privmsg and rule.is_channel_rate_limited(trigger.sender):
                 return
+            # Global rate limit: prevents bot-wide overload
             if rule.is_global_rate_limited():
                 return
 
-        # channel config
+        # Channel-specific configuration: check if plugin/command is disabled
         if trigger.sender in self.config:
             channel_config = self.config[trigger.sender]
 
-            # disable listed plugins completely on provided channel
+            # Check if entire plugins are disabled in this channel
             if 'disable_plugins' in channel_config:
                 disabled_plugins = channel_config.disable_plugins.split(',')
 
+                # '*' means all plugins disabled in this channel
                 if '*' in disabled_plugins:
                     return
                 elif rule.get_plugin_name() in disabled_plugins:
                     return
 
-            # disable chosen methods from plugins
+            # Check if specific commands are disabled in this channel
             if 'disable_commands' in channel_config:
                 disabled_commands = literal_eval(channel_config.disable_commands)
                 disabled_commands = disabled_commands.get(rule.get_plugin_name(), [])
                 if rule.get_rule_label() in disabled_commands:
                     return
 
+        # Execute the rule, catching all exceptions except KeyboardInterrupt
         try:
             rule.execute(sopel, trigger)
         except KeyboardInterrupt:
@@ -690,9 +796,20 @@ class Sopel(irc.AbstractBot):
         :type sopel: :class:`SopelWrapper`
         :param Trigger trigger: the Trigger object for the line from the server
                                 that triggered this call
+
+        This method enforces three types of rate limiting:
+
+        * User rate limit: per-user cooldown on function usage
+        * Channel rate limit: per-channel cooldown
+        * Global rate limit: bot-wide cooldown
+
+        It also respects channel-specific plugin and command disabling.
+        The function's return value can be :attr:`plugin.NOLIMIT` to skip
+        updating rate limit timestamps.
         """
         nick = trigger.nick
         current_time = time.time()
+        # Initialize rate limit tracking dicts for new users/channels
         if nick not in self._times:
             self._times[nick] = dict()
         if self.nick not in self._times:
@@ -700,7 +817,9 @@ class Sopel(irc.AbstractBot):
         if not trigger.is_privmsg and trigger.sender not in self._times:
             self._times[trigger.sender] = dict()
 
+        # Rate limiting enforcement (admins and unblockable functions bypass)
         if not trigger.admin and not func.unblockable:
+            # Check user rate limit: has this user used this function recently?
             if func in self._times[nick]:
                 usertimediff = current_time - self._times[nick][func]
                 if func.rate > 0 and usertimediff < func.rate:
@@ -710,6 +829,7 @@ class Sopel(irc.AbstractBot):
                         func.rate
                     )
                     return
+            # Check global rate limit: has anyone used this function recently?
             if func in self._times[self.nick]:
                 globaltimediff = current_time - self._times[self.nick][func]
                 if func.global_rate > 0 and globaltimediff < func.global_rate:
@@ -720,6 +840,7 @@ class Sopel(irc.AbstractBot):
                     )
                     return
 
+            # Check channel rate limit: has anyone in this channel used this function recently?
             if not trigger.is_privmsg and func in self._times[trigger.sender]:
                 chantimediff = current_time - self._times[trigger.sender][func]
                 if func.channel_rate > 0 and chantimediff < func.channel_rate:
@@ -730,7 +851,7 @@ class Sopel(irc.AbstractBot):
                     )
                     return
 
-        # if channel has its own config section, check for excluded plugins/plugin methods
+        # Channel-specific configuration: check for disabled plugins/commands
         if trigger.sender in self.config:
             channel_config = self.config[trigger.sender]
             LOGGER.debug(
@@ -738,11 +859,11 @@ class Sopel(irc.AbstractBot):
                 func.plugin_name, func.__name__, trigger.sender
             )
 
-            # disable listed plugins completely on provided channel
+            # Check if entire plugins are disabled in this channel
             if 'disable_plugins' in channel_config:
                 disabled_plugins = channel_config.disable_plugins.split(',')
 
-                # if "*" is used, we are disabling all plugins on provided channel
+                # "*" means all plugins disabled in this channel
                 if '*' in disabled_plugins:
                     LOGGER.debug(
                         "All plugins disabled in %s; skipping execution of %s.%s",
@@ -756,8 +877,9 @@ class Sopel(irc.AbstractBot):
                     )
                     return
 
-            # disable chosen methods from plugins
+            # Check if specific commands are disabled in this channel
             if 'disable_commands' in channel_config:
+                # disabled_commands format: {'plugin_name': ['command1', 'command2']}
                 disabled_commands = literal_eval(channel_config.disable_commands)
 
                 if func.plugin_name in disabled_commands:
@@ -768,12 +890,14 @@ class Sopel(irc.AbstractBot):
                         )
                         return
 
+        # Execute the function, catching all exceptions for error handling
         try:
             exit_code = func(sopel, trigger)
         except Exception as error:  # TODO: Be specific
             exit_code = None
             self.error(trigger, exception=error)
 
+        # Update rate limit timestamps unless function returned NOLIMIT
         if exit_code != plugin.NOLIMIT:
             self._times[nick][func] = current_time
             self._times[self.nick][func] = current_time
@@ -807,56 +931,73 @@ class Sopel(irc.AbstractBot):
         However, it won't run triggered blockable rules at all when they can't
         be executed for blocked nickname or hostname.
 
+        This method implements the core message dispatch logic:
+
+        1. Checks if the sender is blocked by nick/host blocklists
+        2. Skips replayed messages (IRCv3 message tags with old timestamps)
+        3. Finds all matching rules via the rules manager
+        4. Creates a Trigger with account information for each match
+        5. Executes rules either in separate threads or directly
+        6. Tracks running threads for testing/debugging
+
         .. seealso::
 
             The pattern matching is done by the
             :class:`Rules Manager<sopel.plugins.rules.Manager>`.
 
         """
-        # list of commands running in separate threads for this dispatch
+        # Threading: list of threads started for this dispatch cycle
         running_triggers = []
-        # nickname/hostname blocking
+        # Nickname/hostname blocking: check against configured blocklists
         nick_blocked, host_blocked = self._is_pretrigger_blocked(pretrigger)
         blocked = bool(nick_blocked or host_blocked)
         list_of_blocked_rules = set()
-        # account info
+        # Account info: get the user's account name for privilege checks
         nick = pretrigger.nick
         user_obj = self.users.get(nick)
         account = user_obj.account if user_obj else None
 
-        # skip processing replayed messages
+        # Skip processing replayed messages: prevents handling old messages
+        # when reconnecting (IRCv3 server-time capability)
         if "time" in pretrigger.tags and pretrigger.sender in self.channels:
             join_time = self.channels[pretrigger.sender].join_time
             if join_time is not None and pretrigger.time < join_time:
                 return
 
+        # Main dispatch loop: process each matching rule
         for rule, match in self._rules_manager.get_triggered_rules(self, pretrigger):
+            # Create a Trigger object with regex match and account info
             trigger = Trigger(self.settings, pretrigger, match, account)
 
+            # Check if rule should be blocked
             is_unblockable = trigger.admin or rule.is_unblockable()
             if blocked and not is_unblockable:
                 list_of_blocked_rules.add(str(rule))
                 continue
 
+            # Create a wrapper that provides context-specific defaults
             wrapper = SopelWrapper(
                 self, trigger, output_prefix=rule.get_output_prefix())
 
+            # Threading decision: run in thread if rule is marked as threaded
             if rule.is_threaded():
-                # run in a separate thread
+                # Run in a separate thread to avoid blocking other rules
                 targs = (rule, wrapper, trigger)
                 t = threading.Thread(target=self.call_rule, args=targs)
+                # Set descriptive thread name for debugging
                 plugin_name = rule.get_plugin_name()
                 rule_label = rule.get_rule_label()
                 t.name = '%s-%s-%s' % (t.name, plugin_name, rule_label)
                 t.start()
                 running_triggers.append(t)
             else:
-                # direct call
+                # Direct call for non-threaded rules (faster, but blocking)
                 self.call_rule(rule, wrapper, trigger)
 
-        # update currently running triggers
+        # Update bot's global tracking of running trigger threads
         self._update_running_triggers(running_triggers)
 
+        # Log blocked rule attempts for debugging
         if list_of_blocked_rules:
             if nick_blocked and host_blocked:
                 block_type = 'both blocklists'
@@ -878,7 +1019,9 @@ class Sopel(irc.AbstractBot):
         :return: the running thread(s) currently processing trigger(s)
         :rtype: :term:`iterable`
 
-        This is for testing and debugging purposes only.
+        This property provides thread-safe access to the list of currently
+        executing trigger handler threads. Dead threads are automatically
+        filtered out. This is primarily for testing and debugging purposes.
         """
         with self._running_triggers_lock:
             return [t for t in self._running_triggers if t.is_alive()]
@@ -895,10 +1038,15 @@ class Sopel(irc.AbstractBot):
 
         This is kept private, as it's purely internal machinery and isn't
         meant to be manipulated by outside code.
+
+        **Threading note:** This method is thread-safe via ``_running_triggers_lock``.
+        It merges new threads with existing ones and prunes dead threads.
         """
-        # update bot's global running triggers
+        # Update bot's global running triggers (thread-safe)
         with self._running_triggers_lock:
+            # Combine new threads with existing threads
             running_triggers = running_triggers + self._running_triggers
+            # Filter out dead threads to prevent unbounded memory growth
             self._running_triggers = [
                 t for t in running_triggers if t.is_alive()]
 
@@ -998,22 +1146,36 @@ class Sopel(irc.AbstractBot):
         return False
 
     def _shutdown(self) -> None:
-        """Internal bot shutdown method."""
+        """Internal bot shutdown method.
+
+        This method coordinates a clean shutdown sequence:
+
+        1. Stops the job scheduler (waits up to 15s for it to finish)
+        2. Clears all scheduled jobs
+        3. Calls all registered plugin shutdown handlers
+        4. Clears the shutdown handlers list to prevent double-shutdown
+
+        **Threading note:** The job scheduler runs in its own thread and is
+        joined with a timeout to ensure timely shutdown. Plugin shutdown
+        handlers are called sequentially from the main thread.
+        """
         LOGGER.info("Shutting down")
-        # Stop Job Scheduler
+        # Stop Job Scheduler: signal it to stop and wait for completion
         LOGGER.info("Stopping the Job Scheduler.")
         self._scheduler.stop()
 
         try:
+            # Wait up to 15 seconds for scheduler thread to finish
             self._scheduler.join(timeout=15)
         except RuntimeError:
             LOGGER.exception("Unable to stop the Job Scheduler.")
         else:
             LOGGER.info("Job Scheduler stopped.")
 
+        # Clear all jobs from the scheduler
         self._scheduler.clear_jobs()
 
-        # Shutdown plugins
+        # Shutdown plugins: call each plugin's cleanup function
         LOGGER.info(
             "Calling shutdown for %d plugins.", len(self.shutdown_methods))
 
@@ -1025,9 +1187,10 @@ class Sopel(irc.AbstractBot):
                     shutdown_method.__name__)
                 shutdown_method(self)
             except Exception as e:
+                # Don't let one plugin's shutdown failure break others
                 LOGGER.exception("Error calling shutdown method: %s", e)
 
-        # Avoid calling shutdown methods if we already have.
+        # Clear shutdown methods to prevent double-shutdown
         self.shutdown_methods = []
 
     # URL callbacks management
@@ -1195,27 +1358,48 @@ class SopelWrapper:
     their ``bot`` argument. It acts as a proxy to :meth:`send messages<say>`
     to the sender (either a channel or in a private message) and even to
     :meth:`reply to someone<reply>` in a channel.
+
+    The wrapper provides convenient defaults for common operations:
+
+    * :meth:`say`, :meth:`action`, :meth:`notice` default to the trigger's sender
+    * :meth:`reply` defaults to replying to the trigger's nick
+    * :meth:`kick` defaults to the trigger's channel
+
+    All other attribute access is proxied to the underlying bot instance,
+    making this wrapper largely transparent to plugin code.
     """
     def __init__(self, sopel, trigger, output_prefix=''):
         if not output_prefix:
             # Just in case someone passes in False, None, etc.
             output_prefix = ''
         # The custom __setattr__ for this class sets the attribute on the
-        # original bot object. We don't want that for these, so we set them
-        # with the normal __setattr__.
+        # original bot object. We don't want that for these wrapper-specific
+        # attributes, so we set them with the normal object.__setattr__.
         object.__setattr__(self, '_bot', sopel)
         object.__setattr__(self, '_trigger', trigger)
         object.__setattr__(self, '_out_pfx', output_prefix)
 
     def __dir__(self):
+        """Provide attribute listing for introspection and tab-completion.
+
+        Combines wrapper-specific attributes with the underlying bot's attributes.
+        """
         classattrs = [attr for attr in self.__class__.__dict__
                       if not attr.startswith('__')]
         return list(self.__dict__) + classattrs + dir(self._bot)
 
     def __getattr__(self, attr):
+        """Proxy attribute access to the underlying bot instance.
+
+        This makes the wrapper transparent for most bot operations.
+        """
         return getattr(self._bot, attr)
 
     def __setattr__(self, attr, value):
+        """Proxy attribute writes to the underlying bot instance.
+
+        This allows plugins to modify bot state through the wrapper.
+        """
         return setattr(self._bot, attr, value)
 
     def say(self, message, destination=None, max_messages=1, truncation='', trailing=''):
