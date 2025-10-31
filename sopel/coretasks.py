@@ -12,6 +12,37 @@ This plugin allows the bot to run without user-facing functionality:
 This is written as a plugin to make it easier to extend to support more
 responses to standard IRC codes without having to shove them all into the
 dispatch function in :class:`sopel.bot.Sopel` and making it easier to maintain.
+
+Protocol Handling Overview
+---------------------------
+
+This module implements handlers for core IRC protocol events and numerics:
+
+**Connection & Registration:**
+    Handles the initial connection sequence (``RPL_WELCOME``, ``RPL_MYINFO``,
+    ``RPL_ISUPPORT``), authentication (NickServ, SASL, AuthServ, Q, UserServ),
+    and capability negotiation (CAP LS, CAP ACK, CAP NAK, CAP DEL, CAP NEW).
+
+**Channel & User Tracking:**
+    Maintains internal state for channels (modes, topics, user lists) and users
+    (nicknames, accounts, privileges, away status) by processing JOIN, PART, KICK,
+    QUIT, NICK, MODE, WHO, and NAMES messages.
+
+**Throttling & Flood Protection:**
+    Implements JOIN throttling to prevent flooding when connecting to many
+    channels at startup. The ``throttle_join`` feature queues JOIN events and
+    processes them in batches at a configurable rate.
+
+**WHOX Support:**
+    Uses WHOX (extended WHO format) when available to efficiently query user
+    information including account names. Falls back to standard WHO replies
+    on networks without WHOX support.
+
+**Capability Negotiation:**
+    Requests and manages IRCv3 capabilities including ``multi-prefix``,
+    ``account-tag``, ``account-notify``, ``extended-join``, ``away-notify``,
+    ``chghost``, ``cap-notify``, ``server-time``, ``userhost-in-names``,
+    ``echo-message``, and ``message-tags``.
 """
 # Copyright 2008-2011, Sean B. Palmer (inamidst.com) and Michael Yanovich
 # (yanovich.net)
@@ -41,17 +72,57 @@ LOGGER = logging.getLogger(__name__)
 CORE_QUERYTYPE = '999'
 """WHOX querytype to indicate requests/responses from coretasks.
 
-Other plugins should use a different querytype.
+This is a unique identifier used in WHOX (extended WHO format) queries to
+distinguish responses initiated by coretasks from those initiated by other
+plugins or external sources.
+
+When coretasks sends a WHO query with WHOX support, it includes this querytype
+in the request (e.g., ``WHO #channel a%nuachtf,999``). The server echoes this
+querytype in the response, allowing coretasks to:
+
+1. **Identify its own queries**: Only process WHO responses with this querytype
+2. **Ignore external queries**: Skip responses with different querytypes that
+   may have different formats or be intended for other plugins
+3. **Ensure format correctness**: Confirm the response has the requested fields
+   in the expected order
+
+Other plugins should use a different querytype to avoid conflicts with coretasks.
+
+.. seealso::
+
+    WHOX format specification: http://faerion.sourceforge.net/doc/irc/whox.var
 """
 
 MODE_PREFIX_PRIVILEGES = {
-    "v": plugin.VOICE,
-    "h": plugin.HALFOP,
-    "o": plugin.OP,
-    "a": plugin.ADMIN,
-    "q": plugin.OWNER,
-    "y": plugin.OPER,
-    "Y": plugin.OPER,
+    # Maps mode prefix characters to privilege bit flags for user channel modes.
+    # These mappings are used when parsing MODE commands and NAMES replies to
+    # track which users have which privileges in a channel.
+    #
+    # RELATIONSHIP TO ISUPPORT PREFIX:
+    # The IRC server advertises its supported prefix modes via the ISUPPORT
+    # PREFIX parameter (e.g., PREFIX=(qaohv)~&@%+). This tells us:
+    #   - Which mode letters exist (q, a, o, h, v)
+    #   - Which prefix symbols correspond to each mode (~, &, @, %, +)
+    #   - The privilege order (leftmost = highest privilege)
+    #
+    # This dictionary provides a default mapping from mode letters to Sopel's
+    # internal privilege bit flags. When the bot receives ISUPPORT PREFIX, the
+    # modeparser is updated with the server's actual supported modes, and this
+    # dictionary is used to map those modes to privilege values.
+    #
+    # PRIVILEGE BIT FLAGS:
+    # Each privilege is represented by a bit flag (power of 2) so multiple
+    # privileges can be combined using bitwise OR (|) and checked using bitwise
+    # AND (&). For example, a user with both OP and VOICE would have:
+    #   priv = plugin.OP | plugin.VOICE
+    #
+    "v": plugin.VOICE,     # +v (voice) - can speak in moderated channels
+    "h": plugin.HALFOP,    # +h (halfop) - moderator with limited powers
+    "o": plugin.OP,        # +o (op/chanop) - channel operator, full control
+    "a": plugin.ADMIN,     # +a (admin/protect) - protected op, can't be kicked by ops
+    "q": plugin.OWNER,     # +q (owner/founder) - channel owner, highest privilege
+    "y": plugin.OPER,      # +y (oper) - IRC server operator (InspIRCd)
+    "Y": plugin.OPER,      # +Y (oper) - IRC server operator (alternative)
 }
 
 
@@ -63,20 +134,32 @@ def setup(bot):
 
     The setup phase is used to activate the throttle feature to prevent a flood
     of JOIN commands when there are too many channels to join.
+
+    This function initializes:
+        * The JOIN events queue for throttling
+        * A periodic job to process queued JOINs (if throttling is enabled)
     """
+    # Initialize the JOIN events queue as a deque for efficient FIFO operations
+    # deque.popleft() is O(1), making it ideal for queue processing
     bot.memory['join_events_queue'] = collections.deque()
 
     # Manage JOIN flood protection
     if bot.settings.core.throttle_join:
+        # Ensure wait interval is at least 1 second to prevent excessive scheduler load
         wait_interval = max(bot.settings.core.throttle_wait, 1)
+
+        # Create a periodic job that runs every wait_interval seconds
+        # This job will process up to throttle_join channels per execution
         job = jobs.Job(
-            [wait_interval],
-            plugin='coretasks',
-            label='throttle_join',
-            handler=_join_event_processing,
-            threaded=True,
-            doc=None,
+            [wait_interval],              # Run every wait_interval seconds
+            plugin='coretasks',            # Associate job with this plugin
+            label='throttle_join',         # Unique label for job identification
+            handler=_join_event_processing,  # Function to call on each execution
+            threaded=True,                 # Run in separate thread to avoid blocking
+            doc=None,                      # No user-facing documentation needed
         )
+
+        # Register the job with the bot's scheduler to start execution
         bot.scheduler.register(job)
 
 
@@ -91,19 +174,55 @@ def shutdown(bot):
 def _join_event_processing(bot):
     """Process a batch of JOIN event from the ``join_events_queue`` queue.
 
-    Every time this function is executed, it processes at most
-    ``throttle_join`` JOIN events. For each JOIN, it sends a WHO request to
-    know more about the channel. This will prevent an excess of flood when
-    there are too many channels to join at once.
+    This function implements JOIN flood protection by processing queued JOIN
+    events in controlled batches. Every time this function is executed, it
+    processes at most ``throttle_join`` JOIN events.
+
+    **JOIN Flood Protection Mechanism:**
+
+    When the bot connects and needs to join many channels, sending MODE and WHO
+    commands for each channel immediately can trigger server flood protection,
+    causing the bot to be disconnected or throttled. To prevent this:
+
+    1. **Queuing**: When ``throttle_join`` is enabled, channel JOINs are added
+       to ``join_events_queue`` instead of being processed immediately
+    2. **Batching**: This function runs periodically (via scheduled job) and
+       processes a fixed number of channels per execution
+    3. **Rate Limiting**: The job interval (``throttle_wait``) controls how
+       often batches are processed, effectively rate-limiting the MODE/WHO flood
+    4. **Batch Sizing**: The batch size (``throttle_join``) controls how many
+       channels are processed per interval
+
+    For each JOIN event processed, this function sends:
+        * **MODE request**: Queries the channel's modes (e.g., +nt, +k key, +l limit)
+        * **WHO request**: Queries information about users in the channel
+          (nicknames, privileges, accounts, hostmasks)
+
+    **Example:** With ``throttle_join = 3`` and ``throttle_wait = 5``, the bot
+    will process 3 channels every 5 seconds, allowing it to join 100 channels
+    in ~167 seconds without triggering flood protection.
+
+    :param bot: Sopel bot instance with ``join_events_queue`` in memory
+    :type bot: :class:`sopel.bot.Sopel`
     """
+    # Determine batch size: process at most throttle_join channels per call
+    # Minimum of 1 ensures we always process at least one channel if available
     batch_size = max(bot.settings.core.throttle_join, 1)
+
     for _ in range(batch_size):
         try:
+            # Pop the oldest channel from the queue (FIFO order)
             channel = bot.memory['join_events_queue'].popleft()
         except IndexError:
+            # Queue is empty, no more channels to process in this batch
             break
+
         LOGGER.debug("Sending MODE and WHO after channel JOIN: %s", channel)
+
+        # Request channel modes to populate bot.channels[channel].modes
         bot.write(["MODE", channel])
+
+        # Request user information to populate user list and privileges
         _send_who(bot, channel)
 
 
@@ -287,12 +406,15 @@ def startup(bot, trigger):
         bot.write(('MODE', bot.nick, modes))
 
     # join channels
+    # Initialize retry_join memory to track failed +R channel join attempts
     bot.memory['retry_join'] = SopelMemory()
 
     channels = bot.config.core.channels
     if not channels:
         LOGGER.info("No initial channels to JOIN.")
     elif bot.config.core.throttle_join:
+        # JOIN throttling is enabled: send JOINs in batches with delays
+        # This prevents the initial burst of JOINs from triggering flood protection
         throttle_rate = int(bot.config.core.throttle_join)
         throttle_wait = max(bot.config.core.throttle_wait, 1)
         channels_joined = 0
@@ -304,13 +426,19 @@ def startup(bot, trigger):
 
         for channel in channels:
             channels_joined += 1
+            # Every throttle_rate JOINs, pause for throttle_wait seconds
+            # Example: if throttle_rate=10 and throttle_wait=2, sleep after every 10th JOIN
             if not channels_joined % throttle_rate:
                 LOGGER.debug(
                     "Waiting %ds before next JOIN batch.",
                     throttle_wait)
                 time.sleep(throttle_wait)
+            # Send the JOIN command to the server
+            # The resulting JOIN event will be queued for processing by _join_event_processing()
             bot.join(channel)
     else:
+        # JOIN throttling is disabled: send all JOINs immediately
+        # MODE and WHO requests will be sent directly in track_join() handler
         LOGGER.info(
             "Joining %d channels (with JOIN throttle OFF); "
             "this may take a moment.",
@@ -636,15 +764,31 @@ def _parse_modes(bot, args, clear=False):
 
     # update user privileges in channel
     # modeinfo.privileges contains only the valid parsed privileges
+    # Format: [(privilege_letter, is_added, target_nick), ...]
+    # Example: [('o', True, 'Alice'), ('v', False, 'Bob')]
     for privilege, is_added, param in modeinfo.privileges:
-        # User privs modes, always have a param
+        # User privilege modes always have a parameter: the target user's nick
         nick = bot.make_identifier(param)
+
+        # Get current privileges for this user (default to 0 = no privileges)
         priv = channel.privileges.get(nick, 0)
+
+        # Look up the privilege bit flag for this mode letter
+        # Example: 'o' -> plugin.OP (bit flag value)
         value = MODE_PREFIX_PRIVILEGES[privilege]
+
         if is_added:
+            # Add privilege using bitwise OR
+            # Example: If user has VOICE (0b001) and gains OP (0b100),
+            #          result is 0b101 (both VOICE and OP)
             priv = priv | value
         else:
+            # Remove privilege using bitwise AND with complement
+            # Example: If user has OP|VOICE (0b101) and loses OP (0b100),
+            #          result is 0b001 (only VOICE)
             priv = priv & ~value
+
+        # Update the user's privilege value in the channel
         channel.privileges[nick] = priv
 
     # log ignored modes (modes Sopel doesn't know how to handle)
@@ -673,12 +817,27 @@ def _parse_modes(bot, args, clear=False):
 @plugin.unblockable
 @plugin.priority('medium')
 def track_nicks(bot, trigger):
-    """Track nickname changes and maintain our chanops list accordingly."""
+    """Track nickname changes and maintain channel/user state accordingly.
+
+    When a user changes their nickname, the bot must update:
+        * User object mapping in ``bot.users`` (old nick -> new nick)
+        * Channel user lists in ``bot.channels[channel]`` for all shared channels
+        * Privilege mappings for the user in each channel
+
+    **Special case:** If the bot's own nick changes unexpectedly, this is
+    usually a configuration error (e.g., nick protected by NickServ) and
+    requires operator intervention.
+    """
     old = trigger.nick
     new = bot.make_identifier(trigger)
 
-    # Give debug message, and PM the owner, if the bot's own nick changes.
+    # Detect if the bot's own nickname was changed (usually by server/services)
     if old == bot.nick and new != bot.nick:
+        # This is problematic because:
+        # 1. The bot expects to use its configured nickname
+        # 2. Some plugins may hardcode the expected nick
+        # 3. Authentication may fail with the wrong nick
+        # 4. This usually indicates NickServ protection or conflicting registration
         privmsg = (
             "Hi, I'm your bot, %s. Something has made my nick change. This "
             "can cause some problems for me, and make me do weird things. "
@@ -694,8 +853,13 @@ def track_nicks(bot, trigger):
         bot.say(privmsg, bot.config.core.owner)
         return
 
+    # Update all channels where this user is present
+    # Channel.rename_user() updates the user list and privilege mappings
     for channel in bot.channels.values():
         channel.rename_user(old, new)
+
+    # Update the global user mapping: move User object from old nick to new nick
+    # This preserves user metadata (account, away status, etc.)
     if old in bot.users:
         bot.users[new] = bot.users.pop(old)
 
@@ -752,19 +916,58 @@ def _remove_from_channel(bot, nick, channel):
 
 
 def _send_who(bot, channel):
+    """Send a WHO query for the specified channel using WHOX if available.
+
+    WHOX (extended WHO format) allows clients to request specific fields in
+    WHO replies and tag responses with a querytype for identification.
+
+    **Standard WHO reply format (RFC 1459):**
+        ``352 <client> <channel> <user> <host> <server> <nick> <flags> :<hopcount> <realname>``
+
+    **WHOX reply format (with querytype 999):**
+        ``354 <client> 999 <channel> <nick> <user> <account> <host> <flags>``
+
+    The WHOX format provides:
+        * **Querytype identification**: Distinguishes our queries from others
+        * **Account information**: User's services account name (not in standard WHO)
+        * **Efficient parsing**: Only requested fields are included
+        * **Consistent field order**: Fields appear in the order we specify
+
+    :param bot: Sopel bot instance
+    :type bot: :class:`sopel.bot.Sopel`
+    :param str channel: Channel name to query
+    """
     if 'WHOX' in bot.isupport:
-        # WHOX syntax, see http://faerion.sourceforge.net/doc/irc/whox.var
-        # Needed for accounts in WHO replies. The `CORE_QUERYTYPE` parameter
-        # for WHO is used to identify the reply from the server and confirm
-        # that it has the requested format. WHO replies with different
-        # querytypes in the response were initiated elsewhere and will be
-        # ignored.
+        # WHOX syntax: WHO <mask> <flags>%<fields>,<querytype>
+        #
+        # Flags: 'a' = request all matching users (not just ops)
+        # Fields requested:
+        #   n = channel name
+        #   u = username (~user part of hostmask)
+        #   a = account name (services account, '*' if not logged in, '0' if unknown)
+        #   c = client type/querytype (echoes our CORE_QUERYTYPE for identification)
+        #   h = hostname (host part of hostmask)
+        #   t = querytype token (old format, included for compatibility)
+        #   f = flags (G/H for away/here, plus privilege prefixes like @ for op)
+        #
+        # Querytype: CORE_QUERYTYPE ('999') - unique identifier to recognize our queries
+        #
+        # The server echoes this querytype in RPL_WHOSPCRPL (354) responses,
+        # allowing us to distinguish our queries from those initiated by plugins
+        # or other clients. Responses with different querytypes are ignored by
+        # recv_whox() to prevent processing incorrectly formatted data.
+        #
+        # See: http://faerion.sourceforge.net/doc/irc/whox.var
         bot.write(['WHO', channel, 'a%nuachtf,' + CORE_QUERYTYPE])
     else:
-        # We might be on an old network, but we still care about keeping our
-        # user list updated
+        # Fallback to standard WHO for networks without WHOX support
+        # Standard WHO replies (RPL_WHOREPLY, 352) have less information and
+        # don't include account names, but we still need to track basic user info
         bot.write(['WHO', channel])
 
+    # Update the channel's last WHO timestamp for periodic WHO scheduling
+    # The _periodic_send_who() job uses this to determine which channel needs
+    # an update most urgently (e.g., to detect away status changes)
     channel_id = bot.make_identifier(channel)
     bot.channels[channel_id].last_who = datetime.datetime.utcnow()
 
@@ -802,46 +1005,81 @@ def _periodic_send_who(bot):
 @plugin.unblockable
 @plugin.priority('medium')
 def track_join(bot, trigger):
-    """Track users joining channels.
+    """Track users joining channels and initialize channel state.
+
+    When a user joins a channel, the bot must:
+        * Create a Channel object if this is a new channel
+        * Create or update a User object for the joining user
+        * Add the user to the channel's user list
+        * Send WHO/MODE queries to populate channel state (if bot joined)
+        * Process extended-join account information (if available)
+
+    **Two scenarios:**
+
+    1. **Bot joins channel**: Send MODE to query channel modes, and WHO to
+       query all users in the channel (nicknames, accounts, privileges)
+    2. **Other user joins**: Add user to channel's user list, extracting
+       account from extended-join if available
 
     When a user joins a channel, the bot will send (or queue) a ``WHO`` command
     to know more about said user (privileges, modes, etc.).
     """
     channel = trigger.sender
 
-    # is it a new channel?
+    # Check if this is a new channel for the bot
     if channel not in bot.channels:
+        # Create Channel object to track state (modes, topic, users, privileges)
         bot.channels[channel] = target.Channel(
             channel,
             identifier_factory=bot.make_identifier,
         )
 
-    # did *we* just join?
+    # Determine if the bot itself just joined this channel
     if trigger.nick == bot.nick:
         LOGGER.info("Channel joined: %s", channel)
+
+        # Record when we joined for tracking purposes
         bot.channels[channel].join_time = trigger.time
+
+        # Handle JOIN flood protection
         if bot.settings.core.throttle_join:
+            # Queue this channel for later MODE/WHO processing
+            # The _join_event_processing() job will process it in batches
             LOGGER.debug("JOIN event added to queue for channel: %s", channel)
             bot.memory['join_events_queue'].append(channel)
         else:
+            # No throttling: immediately send MODE and WHO
             LOGGER.debug("Send MODE and direct WHO for channel: %s", channel)
+            # MODE query populates channel modes (+nt, +k key, +l limit, etc.)
             bot.write(["MODE", channel])
+            # WHO query populates user list with accounts, privileges, etc.
             _send_who(bot, channel)
     else:
+        # Another user joined a channel we're in
         LOGGER.info(
             "Channel %r joined by user: %s",
             str(channel), trigger.nick)
 
-    # set initial values
+    # Create or update User object for the joining user
     user = bot.users.get(trigger.nick)
     if user is None:
+        # New user we haven't seen before: create User object
+        # trigger.user and trigger.host come from the JOIN hostmask
         user = target.User(trigger.nick, trigger.user, trigger.host)
         bot.users[trigger.nick] = user
+
+    # Add user to the channel's user list (with no privileges initially)
+    # Privileges will be populated by WHO response or NAMES reply
     bot.channels[channel].add_user(user)
 
+    # Process extended-join account information if available
+    # Extended-join format: JOIN #channel accountname :realname
+    # Standard join format: JOIN #channel
     if len(trigger.args) > 1 and trigger.args[1] != '*' and (
             'account-notify' in bot.enabled_capabilities and
             'extended-join' in bot.enabled_capabilities):
+        # Extended-join provides the user's services account in trigger.args[1]
+        # '*' means not logged in, otherwise it's the account name
         user.account = trigger.args[1]
 
 
@@ -869,55 +1107,94 @@ def track_quit(bot, trigger):
 @plugin.unblockable
 @plugin.priority('medium')
 def receive_cap_list(bot, trigger):
-    """Handle client capability negotiation."""
+    """Handle client capability negotiation.
+
+    This function processes CAP (Client Capability) messages from the IRC server
+    during IRCv3 capability negotiation. CAP negotiation allows the client and
+    server to agree on protocol extensions beyond basic IRC.
+
+    **CAP Protocol Flow:**
+
+    1. Client sends: ``CAP LS 302`` (request capability list, version 3.2)
+    2. Server replies: ``CAP * LS :multi-prefix sasl=PLAIN account-notify ...``
+    3. Client sends: ``CAP REQ :multi-prefix account-notify``
+    4. Server replies: ``CAP * ACK :multi-prefix account-notify`` (accepted)
+                   or ``CAP * NAK :multi-prefix account-notify`` (rejected)
+    5. Client sends: ``CAP END`` (finish negotiation)
+
+    Additionally, during an active connection:
+        * ``CAP NEW``: Server adds a new capability (e.g., after module load)
+        * ``CAP DEL``: Server removes a capability (e.g., before module unload)
+
+    .. seealso::
+
+        IRCv3 CAP specification: https://ircv3.net/specs/extensions/capability-negotiation.html
+    """
+    # Strip capability modifiers: '-' (disable), '=' (sticky), '~' (ack)
     cap = trigger.strip('-=~')
-    # Server is listing capabilities
+
+    # Server is listing capabilities (CAP LS or CAP LS 302)
     if trigger.args[1] == 'LS':
         receive_cap_ls_reply(bot, trigger)
-    # Server denied CAP REQ
+
+    # Server denied CAP REQ (capability not available or conflicts with another)
     elif trigger.args[1] == 'NAK':
         entry = bot._cap_reqs.get(cap, None)
-        # If it was requested with bot.cap_req
+        # Check if this capability was requested via bot.cap_req()
         if entry:
             for req in entry:
-                # And that request was mandatory/prohibit, and a callback was
-                # provided
+                # If the request was mandatory ('=' prefix) or prohibit ('-' prefix)
+                # and a failure callback was provided, invoke it
                 if req.prefix and req.failure:
-                    # Call it.
+                    # Call the failure callback to handle the rejection
                     req.failure(bot, req.prefix + cap)
-    # Server is removing a capability
+
+    # Server is removing a capability (CAP DEL - IRCv3.2 cap-notify)
+    # This can happen if server unloads a module providing the capability
     elif trigger.args[1] == 'DEL':
         entry = bot._cap_reqs.get(cap, None)
-        # If it was requested with bot.cap_req
+        # Check if this capability was requested via bot.cap_req()
         if entry:
             for req in entry:
-                # And that request wasn't prohibit, and a callback was
-                # provided
+                # If the request wasn't prohibit ('-') and has a failure callback
                 if req.prefix != '-' and req.failure:
-                    # Call it.
+                    # Call the failure callback to handle capability removal
                     req.failure(bot, req.prefix + cap)
-    # Server is adding new capability
+
+    # Server is adding new capability (CAP NEW - IRCv3.2 cap-notify)
+    # This can happen if server loads a module providing new capabilities
     elif trigger.args[1] == 'NEW':
         entry = bot._cap_reqs.get(cap, None)
-        # If it was requested with bot.cap_req
+        # Check if this capability was requested via bot.cap_req()
         if entry:
             for req in entry:
-                # And that request wasn't prohibit
+                # If the request wasn't prohibit ('-'), request the new capability
                 if req.prefix != '-':
-                    # Request it
+                    # Send CAP REQ to enable the newly available capability
                     bot.write(('CAP', 'REQ', req.prefix + cap))
-    # Server is acknowledging a capability
+
+    # Server is acknowledging a capability (CAP ACK - capability enabled)
     elif trigger.args[1] == 'ACK':
+        # Parse capability list (can be multiple caps in one ACK)
         caps = trigger.args[2].split()
         for cap in caps:
+            # Clean up capability modifiers
             cap.strip('-~= ')
+
+            # Add to the set of enabled capabilities for runtime checks
             bot.enabled_capabilities.add(cap)
+
+            # Execute success callbacks for this capability
             entry = bot._cap_reqs.get(cap, [])
             for req in entry:
                 if req.success:
                     req.success(bot, req.prefix + trigger)
-            if cap == 'sasl':  # TODO why is this not done with bot.cap_req?
+
+            # Special handling for SASL capability
+            # TODO: This should be migrated to use bot.cap_req() like other caps
+            if cap == 'sasl':
                 try:
+                    # Initiate SASL authentication flow
                     receive_cap_ack_sasl(bot)
                 except config.ConfigurationError as error:
                     LOGGER.error(str(error))
@@ -925,23 +1202,44 @@ def receive_cap_list(bot, trigger):
 
 
 def receive_cap_ls_reply(bot, trigger):
+    """Process CAP LS (capability list) replies from the server.
+
+    CAP LS is sent by the server to list available capabilities. The server may
+    send multiple lines if the capability list is long (multi-line reply).
+
+    **Capability Format:**
+        * Simple: ``multi-prefix`` (no value)
+        * With value: ``sasl=PLAIN,EXTERNAL`` (capability=value)
+
+    This function accumulates capabilities across multi-line replies and stores
+    them in ``bot.server_capabilities`` once the complete list is received.
+    """
+    # Check if capabilities were already processed
     if bot.server_capabilities:
         # We've already seen the results, so someone sent CAP LS from a plugin.
         # We're too late to do SASL, and we don't want to send CAP END before
         # the plugin has done what it needs to, so just return
         return
 
+    # Parse each capability in this reply line
     for cap in trigger.split():
+        # Split on '=' to separate capability name from value
         c = cap.split('=')
         if len(c) == 2:
+            # Capability with value (e.g., "sasl=PLAIN,EXTERNAL")
             batched_caps[c[0]] = c[1]
         else:
+            # Capability without value (e.g., "multi-prefix")
             batched_caps[c[0]] = None
 
-    # Not the last in a multi-line reply. First two args are * and LS.
+    # Check if this is a multi-line reply
+    # In multi-line CAP LS: "CAP * LS * :cap1 cap2 cap3" (more coming)
+    # In final line: "CAP * LS :cap4 cap5" (no asterisk in args[2])
     if trigger.args[2] == '*':
+        # Not the last in a multi-line reply, wait for more lines
         return
 
+    # All capability lines received, log and store them
     LOGGER.info(
         "Client capability negotiation list: %s",
         ', '.join(batched_caps.keys()),
@@ -1359,18 +1657,53 @@ def account_notify(bot, trigger):
 @plugin.unblockable
 @plugin.priority('medium')
 def recv_whox(bot, trigger):
-    """Track ``WHO`` responses when ``WHOX`` is enabled."""
+    """Track ``WHO`` responses when ``WHOX`` is enabled.
+
+    RPL_WHOSPCRPL (354) is the WHOX response numeric sent by IRC servers that
+    support extended WHO format. This allows more detailed user information
+    including account names.
+
+    **Expected format:**
+        ``354 <client> <querytype> <channel> <nick> <user> <account> <host> <flags>``
+
+    The querytype field is checked to ensure this response matches our request.
+    Only responses with ``CORE_QUERYTYPE`` ('999') are processed by coretasks;
+    others are assumed to be initiated by plugins and are ignored.
+
+    .. seealso::
+
+        Standard WHO response handler: :func:`recv_who`
+    """
+    # Validate querytype to ensure this is a response to our WHO query
     if len(trigger.args) < 2 or trigger.args[1] != CORE_QUERYTYPE:
-        # Ignored, some plugin probably called WHO
+        # Different querytype means this WHO was initiated by a plugin or
+        # external source, and may have different field order/format
         LOGGER.debug("Ignoring WHO reply for channel '%s'; not queried by coretasks", trigger.args[1])
         return
+
+    # Validate response has expected number of fields
+    # Format: client, querytype, channel, nick, user, account, host, flags (8 fields)
     if len(trigger.args) != 8:
         LOGGER.warning(
             "While populating `bot.accounts` a WHO response was malformed.")
         return
+
+    # Parse WHOX response fields
+    # trigger.args[0] is the client nick (us), ignored
     _, _, channel, user, host, nick, status, account = trigger.args
-    away = 'G' in status
+
+    # Parse status field to extract away status and privilege modes
+    # Status format: [H|G][*][@|%|+|~|&|!]...
+    #   H/G = Here/Gone (away status)
+    #   * = IRC operator (not channel privilege)
+    #   @%+~&! = channel privilege prefixes
+    away = 'G' in status  # 'G' = gone (away), 'H' = here (not away)
+
+    # Extract privilege mode prefixes from status field
+    # Filter for known privilege characters: ~ & @ % + !
     modes = ''.join([c for c in status if c in '~&@%+!'])
+
+    # Update internal user and channel state with WHO information
     _record_who(bot, channel, user, host, nick, account, away, modes)
 
 
