@@ -111,7 +111,6 @@ def clean_callable(func, config):
     else:
         func.event = [event.upper() for event in func.event]
 
-    # Build documentation for command-based callables
     if any(hasattr(func, attr) for attr in ['commands', 'nickname_commands', 'action_commands']):
         if hasattr(func, 'example'):
             # Extract user-facing examples (marked with help=True in @plugin.example)
