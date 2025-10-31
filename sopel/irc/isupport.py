@@ -194,12 +194,10 @@ def _map_items(parser=str, map_separator=',', item_separator=':'):
     """
     @functools.wraps(parser)
     def wrapped(value):
-        # Split on map_separator to get individual key:value pairs
         items = sorted(
             item.split(item_separator)
             for item in value.split(map_separator))
 
-        # Parse each value using the provided parser, or None for empty values
         return tuple(
             (k, parser(v) if v else None)
             for k, v in items
