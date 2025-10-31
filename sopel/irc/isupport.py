@@ -129,13 +129,6 @@ def _no_value(value):
     Some ISUPPORT parameters are boolean flags that indicate feature presence
     without any associated value. For example, ``SAFELIST`` indicates that the
     server supports safe list operations, but has no additional data.
-
-    Example::
-
-        >>> _no_value('anything')
-        None
-        >>> _no_value('')
-        None
     """
     return None
 
