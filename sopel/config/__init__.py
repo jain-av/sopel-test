@@ -110,6 +110,19 @@ class Config:
     added and made available by default; it is the only section required for
     Sopel to run. All other sections must be defined later, by the code that
     needs them, using :meth:`define_section`.
+
+    **Section Management:**
+
+    Plugins define their configuration schema by creating a subclass of
+    :class:`~.types.StaticSection` and registering it with :meth:`define_section`.
+    This allows type-safe access to configuration values through Python attributes,
+    while maintaining compatibility with INI-style config files.
+
+    .. seealso::
+
+        :mod:`sopel.config.types` for the base classes and attribute types used
+        to define configuration sections, and :class:`~.core_section.CoreSection`
+        for the built-in core configuration options.
     """
     def __init__(self, filename, validate=True):
         self.filename = filename
@@ -251,6 +264,12 @@ class Config:
         :func:`setup` function, for example, but might not be in the
         :func:`configure` function.
 
+        This method instantiates the section class and attaches it to the
+        config object. The section class should define configuration attributes
+        using descriptors from :mod:`sopel.config.types`, such as
+        :class:`~.types.ValidatedAttribute`, :class:`~.types.ListAttribute`, or
+        :class:`~.types.ChoiceAttribute`.
+
         .. important::
 
             The section's ``name`` SHOULD follow *snake_case* naming rules:
@@ -265,18 +284,33 @@ class Config:
             * :ref:`overriding the section's values <Overriding individual
               settings>` using environment variables
 
+        .. seealso::
+
+            :class:`~.types.StaticSection` for the base class that section
+            definitions should inherit from, and :mod:`sopel.config.types` for
+            the configuration attribute types available.
+
         """
+        # Validate that cls_ is a StaticSection subclass
         if not issubclass(cls_, types.StaticSection):
             raise ValueError("Class must be a subclass of StaticSection.")
+
+        # Check for existing section definition to prevent conflicts
         current = getattr(self, name, None)
         current_name = str(current.__class__)
         new_name = str(cls_)
+        # Allow re-definition only if:
+        # 1. No section exists yet, OR
+        # 2. Existing section is a plain ConfigSection (dynamic), OR
+        # 3. The class is exactly the same (idempotent operation)
         if (current is not None and not isinstance(current, self.ConfigSection) and
                 not current_name == new_name):
             raise ValueError(
                 "Can not re-define class for section from {} to {}.".format(
                     current_name, new_name)
             )
+        # Instantiate the section class and attach it to the config object
+        # This triggers validation of all attributes if validate=True
         setattr(self, name, cls_(self, name, validate=validate))
 
     class ConfigSection:

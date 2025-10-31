@@ -21,6 +21,42 @@ As an example, if one wanted to define the ``[spam]`` section as having an
     Traceback (most recent call last):
         ...
     ValueError: ListAttribute value must be a list.
+
+Configuration Inheritance and Descriptor Pattern
+-------------------------------------------------
+
+This module implements configuration sections using Python's descriptor protocol.
+The inheritance mechanism works as follows:
+
+1. **Section Definition**: Plugins define a subclass of :class:`StaticSection`
+   with class-level :class:`BaseValidated` attributes that act as descriptors.
+
+2. **Section Registration**: The section is registered with the config object
+   via :meth:`~sopel.config.Config.define_section`, which instantiates the
+   section class and attaches it to the config.
+
+3. **Value Resolution**: When accessing an attribute (e.g., ``config.spam.eggs``),
+   the descriptor's :meth:`~BaseValidated.__get__` method is invoked, which:
+
+   a. Checks for environment variable overrides (``SOPEL_SECTION_ATTRIBUTE``)
+   b. Falls back to the value from the config file
+   c. Uses the attribute's default value if neither is set
+   d. Raises :class:`AttributeError` if the value is required but missing
+
+4. **Value Persistence**: When setting an attribute (e.g.,
+   ``config.spam.eggs = [...]``), the descriptor's :meth:`~BaseValidated.__set__`
+   method serializes the value and writes it to the underlying config parser.
+
+This pattern provides type safety, validation, and a clean Python interface
+while maintaining compatibility with INI-style config files. All section
+classes inherit the same descriptor infrastructure from :class:`BaseValidated`,
+ensuring consistent behavior across all configuration options.
+
+.. seealso::
+
+    :class:`~sopel.config.Config` for the main configuration class that manages
+    sections, and :class:`~sopel.config.core_section.CoreSection` for the
+    built-in ``[core]`` section that all bots require.
 """
 
 from __future__ import annotations
@@ -56,24 +92,47 @@ class StaticSection:
 
     """
     def __init__(self, config, section_name, validate=True):
+        """Initialize a StaticSection with validation.
+
+        :param config: the parent configuration object
+        :type config: :class:`~sopel.config.Config`
+        :param str section_name: the name of this section in the config file
+        :param bool validate: whether to validate attribute values during
+                              initialization (optional; defaults to ``True``)
+        :raise ValueError: if validation is enabled and any attribute has an
+                           invalid or missing required value
+
+        This method creates the section in the config parser if it doesn't
+        exist, then iterates through all attributes defined on the class
+        (which should be :class:`BaseValidated` descriptors) and attempts to
+        access them to trigger validation. If validation fails, a descriptive
+        error is raised indicating which setting is problematic.
+        """
         if not config.parser.has_section(section_name):
             config.parser.add_section(section_name)
+        # Store references to parent config and parser for descriptor access
         self._parent = config
         self._parser = config.parser
         self._section_name = section_name
 
+        # Validation phase: iterate through all class attributes to trigger
+        # descriptor __get__ methods, which will parse and validate values
         for value in dir(self):
             if value in ('_parent', '_parser', '_section_name'):
                 # ignore internal attributes
                 continue
 
             try:
+                # Accessing the attribute triggers the descriptor's __get__,
+                # which reads from config file and validates the value
                 getattr(self, value)
             except ValueError as e:
+                # Value exists but is invalid (wrong type, format, etc.)
                 raise ValueError(
                     'Invalid value for {}.{}: {}'.format(
                         section_name, value, str(e)))
             except AttributeError:
+                # Required value is missing (NO_DEFAULT with no value set)
                 if validate:
                     raise ValueError(
                         'Missing required value for {}.{}'.format(
@@ -203,6 +262,21 @@ class BaseValidated(abc.ABC):
         """Take a string from the file, and return the appropriate object."""
 
     def __get__(self, instance, owner=None):
+        """Descriptor protocol: retrieve and parse the attribute value.
+
+        :param instance: the :class:`StaticSection` instance, or ``None`` if
+                         accessed from the class
+        :type instance: :class:`StaticSection` or ``None``
+        :param owner: the :class:`StaticSection` class itself (optional)
+        :type owner: class
+        :return: the parsed configuration value, or the descriptor itself if
+                 accessed from the class
+        :raise AttributeError: if the value is required but not set
+
+        This method implements the descriptor protocol's getter. It follows a
+        value resolution order: environment variables take precedence over
+        config file values, which take precedence over defaults.
+        """
         if instance is None:
             # If instance is None, we're getting from a section class, not an
             # instance of a section class. It makes the wizard code simpler
@@ -210,22 +284,44 @@ class BaseValidated(abc.ABC):
             # instance here.
             return self
 
+        # Value resolution order: environment variable > config file > default
         value = None
+        # Check for environment variable override (e.g., SOPEL_CORE_NICK)
         env_name = 'SOPEL_%s_%s' % (instance._section_name.upper(), self.name.upper())
         if env_name in os.environ:
             value = os.environ.get(env_name)
+        # Otherwise, read from config file if present
         elif instance._parser.has_option(instance._section_name, self.name):
             value = instance._parser.get(instance._section_name, self.name)
 
+        # Parse the raw string value (or use default if value is None)
         settings = instance._parent
         section = getattr(settings, instance._section_name)
         return self._parse(value, settings, section)
 
     def _parse(self, value, settings, section):
+        """Internal parse helper that handles default values.
+
+        :param value: the raw value from config file or environment variable,
+                      or ``None`` if not set
+        :type value: str or ``None``
+        :param settings: the parent config object
+        :type settings: :class:`~sopel.config.Config`
+        :param section: the section instance containing this attribute
+        :type section: :class:`StaticSection`
+        :return: the parsed value
+        :raise AttributeError: if value is ``None`` and no default is set
+
+        This helper method is called by :meth:`__get__` to handle the parsing
+        logic with fallback to default values for optional settings.
+        """
         if value is not None:
+            # Value exists, parse it using subclass-specific parse() method
             return self.parse(value)
         if self.default is not NO_DEFAULT:
+            # No value set, use the default if available
             return self.default
+        # No value and no default: this is a required setting that's missing
         raise AttributeError(
             "Missing required value for {}.{}".format(
                 section._section_name, self.name
@@ -233,25 +329,72 @@ class BaseValidated(abc.ABC):
         )
 
     def __set__(self, instance, value):
+        """Descriptor protocol: set the attribute value in the config file.
+
+        :param instance: the :class:`StaticSection` instance
+        :type instance: :class:`StaticSection`
+        :param value: the value to set, or ``None`` to remove the option
+        :raise ValueError: if trying to set ``None`` on a required option
+
+        Setting a value serializes it to a string and writes it to the
+        underlying config parser. Setting ``None`` removes the option from
+        the config file (unless it's required with NO_DEFAULT).
+        """
         if value is None:
+            # Attempting to unset the value
             if self.default == NO_DEFAULT:
                 raise ValueError('Cannot unset an option with a required value.')
+            # Remove the option from config file
             instance._parser.remove_option(instance._section_name, self.name)
             return
 
+        # Serialize and write the value to config file
         settings = instance._parent
         section = getattr(settings, instance._section_name)
         value = self._serialize(value, settings, section)
         instance._parser.set(instance._section_name, self.name, value)
 
     def _serialize(self, value, settings, section):
+        """Internal serialize helper for value conversion.
+
+        :param value: the value to serialize
+        :param settings: the parent config object
+        :type settings: :class:`~sopel.config.Config`
+        :param section: the section instance containing this attribute
+        :type section: :class:`StaticSection`
+        :return: the serialized string representation
+        :rtype: str
+
+        This helper method delegates to the subclass-specific :meth:`serialize`
+        method. It's provided as an extension point for subclasses that need
+        access to the config context during serialization.
+        """
         return self.serialize(value)
 
     def __delete__(self, instance):
+        """Descriptor protocol: delete the attribute from the config file.
+
+        :param instance: the :class:`StaticSection` instance
+        :type instance: :class:`StaticSection`
+
+        This removes the option from the underlying config parser entirely.
+        """
         instance._parser.remove_option(instance._section_name, self.name)
 
 
 def _parse_boolean(value):
+    """Parse various representations of boolean values.
+
+    :param value: the value to parse as boolean
+    :type value: bool, int, str, or mixed
+    :return: ``True`` or ``False``
+    :rtype: bool
+
+    This helper function recognizes multiple string representations:
+    - Truthy strings: '1', 'yes', 'y', 'true', 'on' (case-insensitive)
+    - Literal: ``True`` or ``1`` (integer)
+    - All other values: converted via ``bool()``
+    """
     if value is True or value == 1:
         return value
     if isinstance(value, str):
@@ -260,6 +403,16 @@ def _parse_boolean(value):
 
 
 def _serialize_boolean(value):
+    """Serialize a boolean value to a config file string.
+
+    :param value: the boolean value to serialize
+    :type value: bool or mixed
+    :return: 'true' or 'false' (lowercase)
+    :rtype: str
+
+    This uses :func:`_parse_boolean` to normalize the input value first,
+    ensuring consistent string output regardless of input format.
+    """
     return 'true' if _parse_boolean(value) else 'false'
 
 
@@ -506,21 +659,29 @@ class ListAttribute(BaseValidated):
 
             When modified and saved to a file, items will be stored as a
             multi-line string (see :meth:`serialize`).
+
+        The parsing logic prefers newline-separated values (the modern format)
+        but falls back to comma-separated values for backward compatibility
+        with older config files.
         """
         if "\n" in value:
+            # Modern multi-line format: split on newlines
             items = (
-                # remove trailing comma
+                # remove trailing comma (for mixed format support)
                 # because `value,\nother` is valid in Sopel 7.x
                 item.strip(self.DELIMITER).strip()
                 for item in value.splitlines())
         else:
+            # Legacy comma-separated format for backward compatibility
             # this behavior will be:
             # - Discouraged in Sopel 7.x (in the documentation)
             # - Deprecated in Sopel 8.x
             # - Removed from Sopel 9.x
             items = value.split(self.DELIMITER)
 
+        # Parse each item (handles unquoting of # prefixed values)
         items = (self.parse_item(item) for item in items if item)
+        # Apply whitespace stripping if enabled
         if self.strip:
             return [item.strip() for item in items]
 
@@ -534,10 +695,16 @@ class ListAttribute(BaseValidated):
 
         If ``item`` matches the :attr:`QUOTE_REGEX` pattern, then it will be
         unquoted. Otherwise it's returned as-is.
+
+        This handles the special case where values starting with ``#`` are
+        quoted in the config file to prevent them from being parsed as comments.
         """
+        # Check if item is quoted (e.g., "#channel" -> remove quotes)
         result = self.QUOTE_REGEX.match(item)
         if result:
+            # Extract the value inside quotes (just the # prefixed content)
             return result.group('value')
+        # No quotes needed/found, return as-is
         return item
 
     def serialize(self, value):
@@ -546,6 +713,11 @@ class ListAttribute(BaseValidated):
         :param list value: the input list
         :rtype: str
         :raise ValueError: if ``value`` is the wrong type (i.e. not a list)
+
+        The serialized format always uses newlines, which is the modern
+        standard format. This ensures that when the config is read again,
+        the newline format will be detected and comma-separated parsing
+        will be bypassed.
         """
         if not isinstance(value, (list, set)):
             raise ValueError('ListAttribute value must be a list.')
@@ -553,9 +725,9 @@ class ListAttribute(BaseValidated):
             # return an empty string when there is no value
             return ''
 
-        # we ensure to read a newline, even with only one value in the list
-        # this way, comma will be ignored when the configuration file
-        # is read again later
+        # Leading newline ensures multi-line format detection on re-read
+        # This way, comma delimiter will be ignored when the configuration
+        # file is parsed again later
         return '\n' + '\n'.join(self.serialize_item(item) for item in value)
 
     def serialize_item(self, item):
@@ -566,10 +738,15 @@ class ListAttribute(BaseValidated):
 
         If ``item`` starts with a ``#`` it will be quoted in order to prevent
         the config parser from thinking it's a comment.
+
+        This quoting is transparent to users: the quotes are added during
+        serialization and removed during parsing via :meth:`parse_item`.
         """
         if item.startswith('#'):
-            # we need to protect item that would otherwise appear as comment
+            # Protect items that would otherwise be parsed as comments
+            # Example: #sopel -> "#sopel" in config file
             return '"%s"' % item
+        # No special handling needed
         return item
 
     def configure(self, prompt, default, parent, section_name):
@@ -610,6 +787,44 @@ class ChoiceAttribute(BaseValidated):
                     require explicit configuration, use
                     :const:`sopel.config.types.NO_DEFAULT` (optional)
     :type default: str
+
+    This attribute type restricts values to a predefined set of choices,
+    validating both on read and write operations. Any attempt to set a value
+    not in the choices list will raise :class:`ValueError`.
+
+    **Usage Example:**
+
+    For a plugin that needs a difficulty setting::
+
+        from sopel.config import types
+
+        class GameSection(types.StaticSection):
+            difficulty = types.ChoiceAttribute(
+                'difficulty',
+                choices=['easy', 'normal', 'hard', 'expert'],
+                default='normal'
+            )
+
+    In the config file:
+
+    .. code-block:: ini
+
+        [game]
+        difficulty = hard
+
+    Accessing the value::
+
+        >>> config.game.difficulty
+        'hard'
+        >>> config.game.difficulty = 'impossible'
+        Traceback (most recent call last):
+            ...
+        ValueError: Value must be in ['easy', 'normal', 'hard', 'expert']
+
+    .. seealso::
+
+        :class:`ValidatedAttribute` for unrestricted string values, or
+        :class:`BooleanAttribute` for binary choices.
     """
     def __init__(self, name, choices, default=None):
         super().__init__(name, default=default)
@@ -622,10 +837,15 @@ class ChoiceAttribute(BaseValidated):
         :return: the ``value``, if it is valid
         :rtype: str
         :raise ValueError: if ``value`` is not one of the valid ``choices``
+
+        This validation ensures that only predefined choices can be loaded
+        from the config file, preventing configuration errors at startup.
         """
         if value in self.choices:
+            # Value is valid, return as-is
             return value
         else:
+            # Value not in allowed choices, reject with clear error message
             raise ValueError('Value must be in {}'.format(self.choices))
 
     def serialize(self, value):
@@ -635,10 +855,15 @@ class ChoiceAttribute(BaseValidated):
         :return: the ``value``, if it is valid
         :rtype: str
         :raise ValueError: if ``value`` is not one of the valid ``choices``
+
+        This validation prevents invalid values from being programmatically
+        set at runtime, ensuring config file integrity.
         """
         if value in self.choices:
+            # Value is valid, return as-is for writing to config
             return value
         else:
+            # Value not in allowed choices, reject before writing to file
             raise ValueError('Value must be in {}'.format(self.choices))
 
 
