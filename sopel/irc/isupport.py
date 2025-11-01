@@ -369,8 +369,6 @@ def _parse_prefix(value):
 
         https://modern.ircdocs.horse/#prefix-parameter
     """
-    # Match pattern: (modes)prefixes
-    # Example: (ov)@+ means mode 'o' = prefix '@', mode 'v' = prefix '+'
     result = re.match(r'\((?P<modes>\S+)\)(?P<prefixes>\S+)', value)
 
     if not result:
@@ -379,11 +377,9 @@ def _parse_prefix(value):
     modes = result.group('modes')
     prefixes = result.group('prefixes')
 
-    # Modes and prefixes must have equal length for proper pairing
     if len(modes) != len(prefixes):
         raise ValueError('Mode list does not match for PREFIX: %r' % value)
 
-    # Zip together to create (mode, prefix) pairs
     return tuple(zip(modes, prefixes))
 
 
