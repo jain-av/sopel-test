@@ -1,5 +1,35 @@
 """Sopel's plugin rules management.
 
+This module provides the rule management system for Sopel's plugin architecture.
+It handles the registration, matching, and execution of various rule types that
+respond to IRC messages.
+
+**Rule Types:**
+
+* **Rule** (Generic Rule): Matches regex patterns at most once per pattern per line
+* **Command**: Named rule triggered by a prefix (e.g., ``.command``)
+* **NickCommand**: Named rule triggered by bot's nickname (e.g., ``BotName: command``)
+* **ActionCommand**: Named rule triggered by CTCP ACTION intents
+* **SearchRule**: Searches for patterns anywhere in text, executes once per match
+* **FindRule**: Finds all non-overlapping pattern matches, executes for each
+* **URLCallback**: Matches patterns against URLs detected in messages
+
+**Matching Strategy:**
+
+Rules are evaluated against incoming IRC messages through the Manager class.
+The matching process:
+
+1. Manager collects all registered rules (generic, commands, nick commands, etc.)
+2. Each rule tests its preconditions (event type, intent, echo-message handling)
+3. Matching rules yield match objects from their regex patterns
+4. Results are sorted by priority (high → medium → low) for execution
+
+**Execution Priority:**
+
+Rules execute in order of their priority setting. Higher priority rules execute
+first, allowing them to potentially block lower priority rules if needed.
+Priorities map to numeric scales: high=0, medium=100, low=1000.
+
 .. versionadded:: 7.1
 
 .. important::
@@ -56,6 +86,11 @@ PRIORITY_MEDIUM = 'medium'
 """Medium rule priority."""
 PRIORITY_LOW = 'low'
 """Lowest rule priority."""
+# Priority scaling system: Maps priority labels to numeric values for sorting.
+# Lower numeric values execute first, so high=0 runs before medium=100 before low=1000.
+# This allows rules to be sorted by priority_scale attribute, ensuring high-priority
+# rules (like admin commands) execute before lower-priority rules (like URL handlers).
+# The large gaps (100, 1000) allow for potential future priority levels if needed.
 PRIORITY_SCALES = {
     PRIORITY_HIGH: 0,
     PRIORITY_MEDIUM: 100,
@@ -68,6 +103,19 @@ _regex_type = type(re.compile(''))
 
 
 def _clean_rules(rules, nick, aliases):
+    """Convert rule patterns to compiled regex objects.
+
+    :param rules: iterable of rule patterns (strings or compiled regexes)
+    :param str nick: bot's nickname for pattern substitution
+    :param aliases: bot's nickname aliases for pattern substitution
+    :type aliases: :class:`list` or :class:`tuple`
+    :return: generator yielding compiled regex objects
+    :rtype: generator
+
+    This helper processes a collection of rule patterns, passing through any
+    already-compiled regex objects and compiling string patterns using
+    :func:`_compile_pattern` with nickname substitution.
+    """
     for pattern in rules:
         if isinstance(pattern, _regex_type):
             # already a compiled regex
@@ -77,25 +125,73 @@ def _clean_rules(rules, nick, aliases):
 
 
 def _compile_pattern(pattern, nick, aliases=None):
+    """Compile a pattern string into a regex with nickname substitution.
+
+    :param str pattern: pattern string containing nickname placeholders
+    :param str nick: bot's primary nickname
+    :param aliases: optional list of nickname aliases
+    :type aliases: :class:`list` or :class:`tuple` or ``None``
+    :return: compiled regex pattern with nickname substitutions applied
+    :rtype: compiled regex object
+
+    This helper compiles rule patterns that use special ``$nickname`` and
+    ``$nick`` placeholders. These are replaced with the bot's actual nickname
+    (and aliases if provided) to create rules that respond to the bot being
+    addressed.
+
+    **Placeholder behavior:**
+
+    * ``$nickname``: Replaced with just the nickname(s)
+    * ``$nick ``: Replaced with nickname(s) followed by ``[:,]`` and optional whitespace
+    * ``$nick``: Replaced with nickname(s) followed by ``[:,]`` and required whitespace
+
+    **Regex flags:**
+
+    * ``re.IGNORECASE``: Always applied for case-insensitive nickname matching
+    * ``re.VERBOSE``: Applied when pattern contains newlines (for readable multi-line patterns)
+    """
     if aliases:
+        # Build a regex alternation group matching any of the bot's nicknames
+        # Example: (?:BotName|BotAlias|BotNick)
         nicks = list(aliases)  # alias_nicks.copy() doesn't work in py2
         nicks.append(nick)
+        # Escape each nickname to treat special regex characters as literals
         nicks = map(re.escape, nicks)
+        # Create non-capturing group with all nickname alternatives
         nick = '(?:%s)' % '|'.join(nicks)
     else:
+        # Single nickname: escape special characters for literal matching
         nick = re.escape(nick)
 
+    # Replace placeholder tokens with regex patterns that match IRC conventions
     pattern = pattern.replace('$nickname', nick)
+    # '$nick ' - with trailing space: matches "BotName: " or "BotName, " with optional whitespace
     pattern = pattern.replace('$nick ', r'{}[,:]\s*'.format(nick))  # @rule('$nick hi')
+    # '$nick' - without space: matches "BotName: " or "BotName, " with required whitespace
     pattern = pattern.replace('$nick', r'{}[,:]\s+'.format(nick))  # @rule('$nickhi')
-    flags = re.IGNORECASE
+
+    # Set regex compilation flags
+    flags = re.IGNORECASE  # Always match nicknames case-insensitively
     if '\n' in pattern:
+        # Enable verbose mode for multi-line patterns (ignores whitespace and allows comments)
         # See https://docs.python.org/3/library/re.html#re.VERBOSE
         flags |= re.VERBOSE
     return re.compile(pattern, flags)
 
 
 def _has_labeled_rule(registry, label, plugin=None):
+    """Check if a rule with the given label exists in the registry.
+
+    :param registry: registry dict mapping plugin names to rule collections
+    :param str label: rule label to search for
+    :param str plugin: optional plugin name to limit search scope
+    :return: ``True`` if a rule with the label exists, ``False`` otherwise
+    :rtype: bool
+
+    This helper searches through a rule registry (which maps plugin names to
+    lists or dicts of rules) to determine if any rule has the specified label.
+    If a plugin name is provided, only rules from that plugin are checked.
+    """
     rules = (
         itertools.chain(*registry.values())
         if plugin is None
@@ -105,6 +201,21 @@ def _has_labeled_rule(registry, label, plugin=None):
 
 
 def _has_named_rule(registry, name, follow_alias=False, plugin=None):
+    """Check if a named rule (command) with the given name exists in the registry.
+
+    :param registry: registry dict mapping plugin names to dicts of named rules
+    :param str name: rule name to search for
+    :param bool follow_alias: whether to also check rule aliases (default: ``False``)
+    :param str plugin: optional plugin name to limit search scope
+    :return: ``True`` if a named rule with the name exists, ``False`` otherwise
+    :rtype: bool
+
+    This helper searches through a named rule registry (which maps plugin names
+    to dicts of named rules like commands) to determine if any rule has the
+    specified name. If ``follow_alias`` is ``True``, the search also checks if
+    the name matches any rule's alias. If a plugin name is provided, only rules
+    from that plugin are checked.
+    """
     rules = registry.values() if plugin is None else [registry.get(plugin, {})]
 
     has_name = any(
@@ -121,6 +232,22 @@ def _has_named_rule(registry, name, follow_alias=False, plugin=None):
 
 
 def _clean_callable_examples(examples):
+    """Filter and clean example dictionaries to include only valid keys.
+
+    :param examples: iterable of example dicts from decorated callable
+    :return: tuple of cleaned example dicts containing only valid keys
+    :rtype: tuple
+
+    This helper processes example data attached to callables by the
+    :func:`sopel.plugin.example` decorator. It filters each example dict
+    to include only recognized keys, removing any extraneous data that
+    might have been added by mistake or for internal use.
+
+    Valid keys include:
+    - Message data: ``example``, ``result``
+    - Flag data: ``is_private_message``, ``is_help``, ``is_pattern``,
+      ``is_admin``, ``is_owner``
+    """
     valid_keys = [
         # message
         'example',
@@ -394,7 +521,26 @@ class Manager:
         :type pretrigger: :class:`sopel.trigger.PreTrigger`
         :return: a tuple of ``(rule, match)``, sorted by priorities
         :rtype: tuple
+
+        **Rule Matching Algorithm:**
+
+        1. **Collect all rules**: Gathers rules from all five registries:
+           generic rules, commands, nick commands, action commands, and URL callbacks
+        2. **Test each rule**: Each rule tests its preconditions (event type,
+           intent, echo-message handling) and attempts to match against the trigger
+        3. **Yield matches**: Rules that match yield ``(rule, match)`` tuples,
+           where ``match`` is a regex match object
+        4. **Sort by priority**: Results are sorted by ``priority_scale``
+           (high=0, medium=100, low=1000), so high-priority rules execute first
+        5. **Return immutable tuple**: Results must be a static tuple (not lazy)
+           to prevent errors if rule execution modifies the registry
+
+        This algorithm ensures that:
+        - All matching rules are found regardless of type
+        - High-priority rules (like admin commands) execute before low-priority rules
+        - The result set is stable and won't change during iteration
         """
+        # Collect rules from all registries
         generic_rules = self._rules.values()
         command_rules = (
             rules_dict.values()
@@ -407,6 +553,7 @@ class Manager:
             for rules_dict in self._action_commands.values())
         url_callback_rules = self._url_callbacks.values()
 
+        # Chain all rule collections together into a single iterable
         rules = itertools.chain(
             itertools.chain(*generic_rules),
             itertools.chain(*command_rules),
@@ -414,6 +561,8 @@ class Manager:
             itertools.chain(*action_rules),
             itertools.chain(*url_callback_rules),
         )
+        # Test each rule against the pretrigger and collect matches
+        # Each rule.match() yields 0 or more match objects
         matches = (
             (rule, match)
             for rule in rules
@@ -719,6 +868,16 @@ class Rule(AbstractRule):
 
     Generic rules are not triggered by any specific name, unlike commands which
     have names and aliases.
+
+    **Rule Type Comparison:**
+
+    * **Rule**: Matches from start of text with ``regex.match()``, executes once per pattern
+    * **SearchRule**: Searches anywhere in text with ``regex.search()``, executes once per pattern
+    * **FindRule**: Finds all occurrences with ``regex.finditer()``, executes for each match
+    * **Command**: Named rule with prefix (e.g., ``.cmd``), uses specific command pattern
+    * **NickCommand**: Named rule triggered by nickname (e.g., ``Bot: cmd``)
+    * **ActionCommand**: Named rule for CTCP ACTION intents only
+    * **URLCallback**: Matches against URLs extracted from messages, not raw text
     """
 
     REGEX_ATTRIBUTE = 'rule'
@@ -981,6 +1140,12 @@ class Rule(AbstractRule):
         )
 
     def parse(self, text):
+        """Parse text and yield matches using regex.match().
+
+        Uses regex.match() which only matches at the start of the text.
+        This is the standard behavior for generic rules - each pattern
+        matches at most once per IRC line.
+        """
         for regex in self._regexes:
             result = regex.match(text)
             if result:
@@ -1509,7 +1674,14 @@ class FindRule(Rule):
     LAZY_ATTRIBUTE = 'find_rules_lazy_loaders'
 
     def parse(self, text):
+        """Parse text and yield all non-overlapping matches using regex.finditer().
+
+        Unlike Rule which matches once per pattern, FindRule finds ALL
+        non-overlapping occurrences in the text. This means a single IRC
+        line can trigger multiple executions of the same rule handler.
+        """
         for regex in self._regexes:
+            # finditer() returns an iterator of all non-overlapping matches
             for match in regex.finditer(text):
                 yield match
 
@@ -1544,7 +1716,14 @@ class SearchRule(Rule):
     LAZY_ATTRIBUTE = 'search_rules_lazy_loaders'
 
     def parse(self, text):
+        """Parse text and yield first match using regex.search().
+
+        Unlike Rule which only matches at the start, SearchRule finds the
+        first occurrence anywhere in the text. Unlike FindRule which finds
+        all occurrences, SearchRule stops after finding the first match.
+        """
         for regex in self._regexes:
+            # search() finds first occurrence anywhere in text, not just at start
             match = regex.search(text)
             if match:
                 yield match
@@ -1677,24 +1856,39 @@ class URLCallback(Rule):
             :attr:`core.auto_url_schemes
             <sopel.config.core_section.CoreSection.auto_url_schemes>` option.
 
+        **URLCallback Matching Behavior:**
+
+        Unlike other rules that match against the full IRC message text,
+        URLCallback extracts URLs from the message and matches patterns
+        against each URL individually. This allows URL-specific handlers
+        to respond to links without complex parsing logic.
         """
         if not self.match_preconditions(bot, pretrigger):
             return
 
-        # Parse only valid URLs with wanted schemes
+        # Parse only valid URLs with wanted schemes (http, https, etc.)
+        # pretrigger.urls is pre-extracted by the IRC parser
         for url in pretrigger.urls:
             try:
                 if urlparse(url).scheme not in self._schemes:
-                    # skip URLs with unwanted scheme
+                    # skip URLs with unwanted scheme (e.g., ignore ftp:// if only http/https wanted)
                     continue
             except ValueError:
-                # skip invalid URLs
+                # skip invalid URLs that can't be parsed
                 continue
 
+            # Match patterns against the URL string, not the full message
             yield from self.parse(url)
 
     def parse(self, text):
+        """Parse URL text and yield first match using regex.search().
+
+        Note: text parameter is a URL string, not the full IRC message.
+        URLCallback patterns should be designed to match URL components
+        (scheme, domain, path, etc.) rather than IRC message text.
+        """
         for regex in self._regexes:
+            # search() is used to match anywhere in the URL
             result = regex.search(text)
             if result:
                 yield result
