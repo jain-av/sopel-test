@@ -3,6 +3,66 @@
 When a server wants to advertise its features and settings, it can use the
 ``RPL_ISUPPORT`` command (``005`` numeric) with a list of arguments.
 
+Overview
+--------
+
+ISUPPORT parameters provide server capability information to IRC clients,
+allowing them to adapt their behavior based on server-specific features,
+limits, and supported modes. This module provides parsing and storage for
+these parameters.
+
+Common ISUPPORT parameters include:
+
+- **CHANTYPES**: Channel prefixes (e.g., ``#``, ``&``)
+- **CHANMODES**: Four groups of channel modes (list, param-always,
+  param-set, no-param)
+- **PREFIX**: User privilege modes and their nick prefixes (e.g., ``@`` for op)
+- **NETWORK**: Network name
+- **NICKLEN**, **CHANNELLEN**: Maximum lengths for nicks and channel names
+- **CHANLIMIT**: Maximum number of channels per channel type
+- **TARGMAX**: Maximum targets per command
+
+Parsing Strategy
+----------------
+
+This module implements a parser-based approach where each known ISUPPORT
+parameter has a dedicated parsing function. Parameters can be:
+
+1. **Integer values**: ``NICKLEN=30``
+2. **String values**: ``NETWORK=Libera``
+3. **No value**: ``SAFELIST`` (presence indicates feature availability)
+4. **Structured data**: ``PREFIX=(ov)@+`` (parsed into mode-prefix pairs)
+5. **Removed parameters**: ``-AWAYLEN`` (prefixed with ``-`` to indicate removal)
+
+The :class:`ISupport` class provides a read-only dict-like interface to access
+parsed parameters, with some parameters exposed as convenient properties that
+return structured data.
+
+Example
+-------
+
+Typical ISUPPORT parsing from server messages::
+
+    >>> params = ['NETWORK=Libera', 'PREFIX=(ov)@+', 'CHANTYPES=#']
+    >>> parsed = dict(parse_parameter(p) for p in params)
+    >>> isupport = ISupport(**parsed)
+    >>> isupport.NETWORK
+    'Libera'
+    >>> isupport.PREFIX
+    OrderedDict([('o', '@'), ('v', '+')])
+    >>> isupport['CHANTYPES']
+    ('#',)
+
+IRC RFCs and Standards
+-----------------------
+
+ISUPPORT is documented in:
+
+- **RPL_ISUPPORT (005)**: Modern IRC documentation at
+  https://modern.ircdocs.horse/#rplisupport-005
+- **Parameter list**: https://modern.ircdocs.horse/#rplisupport-parameters
+- **Original specification**: Based on draft-brocklesby-irc-isupport-03
+
 .. seealso::
 
     https://modern.ircdocs.horse/#rplisupport-005
@@ -21,10 +81,31 @@ from typing import Dict
 
 
 def _optional(parser, default=None):
-    # set a parser as optional: will always return the default value provided
-    # if there is no value (empty or None)
+    """Make a parser function optional with a default fallback.
+
+    This decorator transforms a parser to handle empty or None values by
+    returning a default value instead of attempting to parse. Useful for
+    ISUPPORT parameters that may be advertised without values.
+
+    :param callable parser: The parser function to wrap
+    :param default: The default value to return when input is empty or None
+                    (defaults to ``None``)
+    :return: A wrapped parser that handles empty values gracefully
+    :rtype: callable
+
+    Example::
+
+        >>> optional_int = _optional(int, default=0)
+        >>> optional_int('42')
+        42
+        >>> optional_int('')  # Empty value returns default
+        0
+        >>> optional_int(None)  # None returns default
+        0
+    """
     @functools.wraps(parser)
     def wrapped(value):
+        # Return default for empty strings or None values
         if not value:
             return default
         return parser(value)
@@ -32,11 +113,54 @@ def _optional(parser, default=None):
 
 
 def _no_value(value):
-    # always ignore the value
+    """Parser for ISUPPORT parameters that don't have meaningful values.
+
+    Some ISUPPORT parameters are boolean flags where their presence indicates
+    support for a feature, regardless of any value. This parser ignores the
+    value and always returns None.
+
+    :param value: The parameter value (ignored)
+    :return: Always returns None
+    :rtype: None
+
+    Example::
+
+        >>> _no_value('anything')
+        None
+        >>> _no_value('')
+        None
+
+    Used for parameters like ``SAFELIST`` where the parameter's presence is
+    what matters, not its value.
+    """
+    # Always ignore the value and return None - presence indicates support
     return None
 
 
 def _single_character(value):
+    """Validate and return a single-character value.
+
+    Ensures that the parameter value is exactly one character long. Used for
+    ISUPPORT parameters that specify single-character mode letters.
+
+    :param str value: The value to validate
+    :return: The single character value
+    :rtype: str
+    :raises ValueError: If value is more than one character
+
+    Example::
+
+        >>> _single_character('e')
+        'e'
+        >>> _single_character('I')
+        'I'
+        >>> _single_character('ab')  # doctest: +SKIP
+        ValueError: Too many characters: 'ab'.
+
+    Used for parameters like ``EXCEPTS`` (ban exception mode, typically 'e')
+    and ``INVEX`` (invite exception mode, typically 'I').
+    """
+    # Validate that the value is exactly one character
     if len(value) > 1:
         raise ValueError('Too many characters: %r.' % value)
 
@@ -44,12 +168,43 @@ def _single_character(value):
 
 
 def _map_items(parser=str, map_separator=',', item_separator=':'):
+    """Create a parser for key-value map parameters.
+
+    Many ISUPPORT parameters contain comma-separated key:value pairs that need
+    to be parsed into structured data. This function creates a parser that
+    splits the value and applies a type parser to each item's value component.
+
+    :param callable parser: Parser function to apply to values (defaults to str)
+    :param str map_separator: Character separating key-value pairs
+                              (defaults to ',')
+    :param str item_separator: Character separating keys from values
+                               (defaults to ':')
+    :return: A parser function for map-style parameters
+    :rtype: callable
+
+    Example::
+
+        >>> parse_chanlimit = _map_items(int)
+        >>> parse_chanlimit('#:70,&:')
+        (('&', None), ('#', 70))
+
+    The result is a sorted tuple of (key, value) pairs, where values are
+    parsed by the provided parser function or None if no value is present.
+
+    Used for parameters like:
+    - ``CHANLIMIT=#:70,&:`` - channel limits per type
+    - ``MAXLIST=beI:100,q:50`` - max list entries per mode
+    - ``TARGMAX=PRIVMSG:3,WHOIS:1`` - max targets per command
+    """
     @functools.wraps(parser)
     def wrapped(value):
+        # Split by map_separator (e.g., ',') to get individual items
+        # Then split each item by item_separator (e.g., ':') to get key-value pairs
         items = sorted(
             item.split(item_separator)
             for item in value.split(map_separator))
 
+        # Parse values with the provided parser, or None if empty
         return tuple(
             (k, parser(v) if v else None)
             for k, v in items
@@ -58,15 +213,45 @@ def _map_items(parser=str, map_separator=',', item_separator=':'):
 
 
 def _parse_chanmodes(value):
+    """Parse the CHANMODES parameter into categorized mode groups.
+
+    IRC channel modes are categorized into four types (A, B, C, D) based on
+    how they behave and whether they require parameters. This parser splits
+    the comma-separated mode lists into these categories.
+
+    :param str value: The CHANMODES value (e.g., 'b,k,l,imnpst')
+    :return: Tuple of (A, B, C, D, extras) where each element is a string
+             of mode characters, and extras is a tuple of any additional groups
+    :rtype: tuple
+    :raises ValueError: If fewer than 4 mode groups are present
+
+    Mode categories:
+    - **Type A**: List modes (e.g., 'b' for ban, 'e' for exception)
+    - **Type B**: Modes with a parameter (e.g., 'k' for key/password)
+    - **Type C**: Modes with parameter only when set (e.g., 'l' for limit)
+    - **Type D**: Modes without parameters (e.g., 'i' for invite-only)
+
+    Example::
+
+        >>> _parse_chanmodes('beI,k,l,imnpst')
+        ('beI', 'k', 'l', 'imnpst', ())
+        >>> _parse_chanmodes('b,k,l,imnpst,extra,more')
+        ('b', 'k', 'l', 'imnpst', ('extra', 'more'))
+
+    .. seealso::
+
+        https://modern.ircdocs.horse/#chanmodes-parameter
+    """
     items = value.split(',')
 
+    # Require at least the standard 4 mode type groups
     if len(items) < 4:
         raise ValueError('Not enough channel types to unpack from %r.' % value)
 
-    # add extra channel mode types to their own tuple
-    # result in (A, B, C, D, (E, F, G, H, ..., Z))
-    # where A, B, C, D = result[:4]
-    # and extras = result[4]
+    # Return first 4 groups plus any extras in their own tuple
+    # Result structure: (A, B, C, D, (E, F, G, H, ..., Z))
+    # Standard groups are A, B, C, D at indices 0-3
+    # Any server-specific extras are grouped in a tuple at index 4
     return tuple(items[:4]) + (tuple(items[4:]),)
 
 
