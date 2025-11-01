@@ -1,5 +1,91 @@
 """Sopel's plugin rules management.
 
+This module provides the rule management system that handles pattern matching,
+command routing, and plugin execution for Sopel IRC bot. It defines the
+infrastructure for registering, organizing, and triggering plugin handlers
+based on IRC messages.
+
+Rule Types Overview
+-------------------
+
+Sopel supports several types of rules for different use cases:
+
+* **Rule**: Generic regex-based rules that match patterns in IRC messages.
+  Matches at most once per regex per message. Used with ``@plugin.rule()``.
+
+* **SearchRule**: Searches for patterns anywhere in a message (not just from
+  the start). Matches at most once per regex. Used with ``@plugin.search()``.
+
+* **FindRule**: Finds all non-overlapping matches of a pattern in a message.
+  Can trigger multiple times per message. Used with ``@plugin.find()``.
+
+* **Command**: Named rules triggered by a specific prefix and command name
+  (e.g., ``.help``). Supports aliases. Used with ``@plugin.command()``.
+
+* **NickCommand**: Named rules triggered by addressing the bot by nickname
+  (e.g., ``BotName: help``). Used with ``@plugin.nickname_command()``.
+
+* **ActionCommand**: Named rules triggered by CTCP ACTION messages (``/me``).
+  Used with ``@plugin.action_command()``.
+
+* **URLCallback**: Rules that match URLs found in IRC messages. Can process
+  multiple URLs per message. Used with ``@plugin.url()``.
+
+Matching Strategy
+-----------------
+
+The rule matching process follows these steps:
+
+1. **Precondition checking**: Verify event type, intent, echo-message status
+2. **Pattern matching**: Apply regex patterns to the message text or URLs
+3. **Priority sorting**: Order triggered rules by priority (high → medium → low)
+4. **Execution**: Execute each triggered rule in priority order
+
+Rules are matched against :class:`~sopel.trigger.PreTrigger` objects (parsed
+IRC lines) and return match objects when patterns are found.
+
+Execution Priority
+------------------
+
+Rules have three priority levels that determine execution order:
+
+* **PRIORITY_HIGH**: Executes first (priority scale: 0)
+* **PRIORITY_MEDIUM**: Default priority (priority scale: 100)
+* **PRIORITY_LOW**: Executes last (priority scale: 1000)
+
+Lower numeric scales execute first. All high-priority rules execute before any
+medium-priority rules, which execute before any low-priority rules. This
+ensures critical handlers (like rate limiting or logging) can process messages
+before user-facing commands.
+
+Priority Example::
+
+    @plugin.rule('.*')
+    @plugin.priority('high')
+    def log_everything(bot, trigger):
+        # Executes before other rules
+        log_message(trigger)
+
+    @plugin.command('hello')
+    # Implicitly priority='medium'
+    def hello_command(bot, trigger):
+        # Executes after high-priority rules
+        bot.say('Hello!')
+
+Rule Registration
+-----------------
+
+The :class:`Manager` class centralizes rule registration and retrieval:
+
+* ``register(rule)``: Register generic rules
+* ``register_command(command)``: Register command rules
+* ``register_nick_command(command)``: Register nickname commands
+* ``register_action_command(command)``: Register action commands
+* ``register_url_callback(callback)``: Register URL callbacks
+
+After registration, use ``get_triggered_rules(bot, pretrigger)`` to retrieve
+all matching rules for an IRC line, sorted by priority.
+
 .. versionadded:: 7.1
 
 .. important::
@@ -57,45 +143,139 @@ PRIORITY_MEDIUM = 'medium'
 PRIORITY_LOW = 'low'
 """Lowest rule priority."""
 PRIORITY_SCALES = {
-    PRIORITY_HIGH: 0,
-    PRIORITY_MEDIUM: 100,
-    PRIORITY_LOW: 1000,
+    PRIORITY_HIGH: 0,       # Executes first - critical handlers like logging
+    PRIORITY_MEDIUM: 100,   # Default - most user-facing commands
+    PRIORITY_LOW: 1000,     # Executes last - cleanup or low-priority tasks
 }
-"""Mapping of priority label to priority scale."""
+"""Mapping of priority label to priority scale.
+
+Rules are executed in ascending order of their priority scale value. This means
+rules with lower scale numbers run before rules with higher scale numbers:
+
+1. **PRIORITY_HIGH** (scale 0): Runs first
+2. **PRIORITY_MEDIUM** (scale 100): Runs second (default)
+3. **PRIORITY_LOW** (scale 1000): Runs last
+
+The numeric gaps (0, 100, 1000) allow for potential future priority levels to
+be added between existing ones without requiring rule re-registration.
+"""
 
 # Can be implementation-dependent
 _regex_type = type(re.compile(''))
 
 
 def _clean_rules(rules, nick, aliases):
+    """Clean and compile rule patterns into regex objects.
+
+    :param rules: iterable of regex patterns or compiled regexes
+    :type rules: iterable
+    :param str nick: bot's primary nickname
+    :param aliases: bot's nickname aliases
+    :type aliases: iterable of str
+    :return: generator yielding compiled regex objects
+    :rtype: generator
+
+    This function processes rule patterns, either using pre-compiled regexes
+    as-is or compiling string patterns with nickname substitution. It ensures
+    all rules are in compiled regex form for efficient matching.
+
+    String patterns undergo nickname substitution where ``$nickname`` and
+    ``$nick`` placeholders are replaced with the bot's actual nickname(s).
+    """
     for pattern in rules:
         if isinstance(pattern, _regex_type):
-            # already a compiled regex
+            # Pattern is already a compiled regex, use it directly
             yield pattern
         else:
+            # Pattern is a string, compile it with nickname substitution
             yield _compile_pattern(pattern, nick, aliases)
 
 
 def _compile_pattern(pattern, nick, aliases=None):
+    """Compile a rule pattern with nickname substitution and appropriate flags.
+
+    :param str pattern: regex pattern string with optional nickname placeholders
+    :param str nick: bot's primary nickname
+    :param aliases: bot's nickname aliases (optional)
+    :type aliases: iterable of str or None
+    :return: compiled regex pattern
+    :rtype: re.Pattern
+
+    This function processes rule patterns by:
+
+    1. **Nickname expansion**: If aliases are provided, creates an alternation
+       pattern matching any of the nicknames
+    2. **Placeholder substitution**: Replaces special placeholders:
+
+       * ``$nickname``: Exact nickname match
+       * ``$nick``: Nickname followed by colon/comma and required whitespace
+       * ``$nick `` (with trailing space): Same but whitespace is optional
+
+    3. **Flag determination**: Applies case-insensitive matching; adds VERBOSE
+       flag if pattern contains newlines for multi-line regex readability
+
+    Example transformations::
+
+        # With nick='BotName', no aliases:
+        '$nickname'     → 'BotName'
+        '$nick hello'   → 'BotName[,:]\\s+hello'
+        '$nick hello'   → 'BotName[,:]\\s*hello'  (trailing space in $nick )
+
+        # With nick='BotName', aliases=['Bot', 'BN']:
+        '$nickname'     → '(?:Bot|BN|BotName)'
+
+    .. note::
+
+        The ``$nick`` placeholder with trailing space produces ``\\s*`` (zero or
+        more spaces), while without trailing space it produces ``\\s+`` (one or
+        more spaces). This allows both "BotName:hello" and "BotName: hello".
+    """
+    # Build nickname pattern: either single escaped nick or alternation of all
     if aliases:
-        nicks = list(aliases)  # alias_nicks.copy() doesn't work in py2
-        nicks.append(nick)
+        nicks = list(aliases)  # Create mutable copy of aliases
+        nicks.append(nick)  # Add primary nick to the list
+        # Escape each nick for regex, then create non-capturing alternation group
         nicks = map(re.escape, nicks)
         nick = '(?:%s)' % '|'.join(nicks)
     else:
+        # No aliases, just escape the primary nickname
         nick = re.escape(nick)
 
+    # Perform placeholder substitution in order of specificity
+    # Most specific first to avoid partial replacements
     pattern = pattern.replace('$nickname', nick)
-    pattern = pattern.replace('$nick ', r'{}[,:]\s*'.format(nick))  # @rule('$nick hi')
-    pattern = pattern.replace('$nick', r'{}[,:]\s+'.format(nick))  # @rule('$nickhi')
-    flags = re.IGNORECASE
+    # '$nick ' (with space) → optional whitespace after colon/comma
+    pattern = pattern.replace('$nick ', r'{}[,:]\s*'.format(nick))
+    # '$nick' (without space) → required whitespace after colon/comma
+    pattern = pattern.replace('$nick', r'{}[,:]\s+'.format(nick))
+
+    # Determine regex compilation flags
+    flags = re.IGNORECASE  # All rule patterns are case-insensitive
+
     if '\n' in pattern:
+        # Pattern contains newlines, enable VERBOSE mode for readability
+        # VERBOSE mode ignores whitespace and allows inline comments in regex
         # See https://docs.python.org/3/library/re.html#re.VERBOSE
         flags |= re.VERBOSE
+
     return re.compile(pattern, flags)
 
 
 def _has_labeled_rule(registry, label, plugin=None):
+    """Check if a rule with the given label exists in the registry.
+
+    :param registry: mapping of plugin names to rule collections
+    :type registry: dict
+    :param str label: rule label to search for
+    :param str plugin: optional plugin name to limit search scope
+    :return: ``True`` if a rule with the label exists, ``False`` otherwise
+    :rtype: bool
+
+    Searches through registered rules to find one with a matching label.
+    If ``plugin`` is specified, only searches rules from that plugin;
+    otherwise searches all registered rules across all plugins.
+    """
+    # Determine which rules to search: all plugins or specific plugin
     rules = (
         itertools.chain(*registry.values())
         if plugin is None
@@ -105,12 +285,34 @@ def _has_labeled_rule(registry, label, plugin=None):
 
 
 def _has_named_rule(registry, name, follow_alias=False, plugin=None):
+    """Check if a named rule (command) with the given name exists.
+
+    :param registry: mapping of plugin names to rule name dictionaries
+    :type registry: dict
+    :param str name: rule name to search for
+    :param bool follow_alias: whether to check rule aliases (default: ``False``)
+    :param str plugin: optional plugin name to limit search scope
+    :return: ``True`` if a rule with the name exists, ``False`` otherwise
+    :rtype: bool
+
+    Searches for named rules (commands) by their primary name. If
+    ``follow_alias`` is ``True``, also checks if any rule has the name as an
+    alias. If ``plugin`` is specified, only searches that plugin's rules.
+
+    Named rules are organized as dicts within the registry, where keys are
+    rule names and values are rule objects. This structure differs from generic
+    rules which are stored as lists.
+    """
+    # Determine which plugin rule dicts to search
     rules = registry.values() if plugin is None else [registry.get(plugin, {})]
 
+    # Check if name exists as a primary name (dict key) in any plugin
     has_name = any(
         (name in plugin_rules)
         for plugin_rules in rules
     )
+
+    # Check if name exists as an alias in any rule
     aliases = (
         rule.has_alias(name)
         for plugin_rules in rules
@@ -121,18 +323,40 @@ def _has_named_rule(registry, name, follow_alias=False, plugin=None):
 
 
 def _clean_callable_examples(examples):
+    """Filter and normalize example dictionaries from callable handlers.
+
+    :param examples: iterable of example dictionaries from handler
+    :type examples: iterable of dict
+    :return: tuple of cleaned example dictionaries
+    :rtype: tuple
+
+    This function filters example dictionaries to include only recognized keys,
+    removing any extraneous attributes that might have been added during
+    decorator processing.
+
+    Valid keys are:
+
+    * **Message fields**: ``example``, ``result``
+    * **Flag fields**: ``is_private_message``, ``is_help``, ``is_pattern``,
+      ``is_admin``, ``is_owner``
+
+    Examples with unrecognized keys will have those keys removed, ensuring
+    consistent example structure for documentation and testing.
+    """
     valid_keys = [
-        # message
-        'example',
-        'result',
-        # flags
-        'is_private_message',
-        'is_help',
-        'is_pattern',
-        'is_admin',
-        'is_owner',
+        # Message content fields
+        'example',    # The input message text
+        'result',     # Expected output or response
+
+        # Boolean flags controlling example behavior
+        'is_private_message',  # Whether example is a private message
+        'is_help',             # Whether to include in help documentation
+        'is_pattern',          # Whether result is a regex pattern
+        'is_admin',            # Whether user must be admin
+        'is_owner',            # Whether user must be owner
     ]
 
+    # Filter each example dict to include only valid keys
     return tuple(
         dict(
             (key, value)
@@ -392,10 +616,35 @@ class Manager:
         :type bot: :class:`sopel.bot.Sopel`
         :param pretrigger: IRC line
         :type pretrigger: :class:`sopel.trigger.PreTrigger`
-        :return: a tuple of ``(rule, match)``, sorted by priorities
+        :return: a tuple of ``(rule, match)`` pairs, sorted by priority
         :rtype: tuple
+
+        This method implements the rule matching algorithm:
+
+        1. **Collect all rules**: Gather rules from all registries (generic
+           rules, commands, nick commands, action commands, URL callbacks)
+        2. **Match rules**: Test each rule against the pretrigger, collecting
+           ``(rule, match_object)`` pairs for rules that match
+        3. **Sort by priority**: Order matches by priority scale (high → low)
+        4. **Return immutable result**: Convert to tuple to prevent modification
+
+        The matching process respects each rule's preconditions (event type,
+        intent, echo-message handling) before attempting pattern matching.
+
+        .. note::
+
+            The return value is a tuple (not a generator or list) to ensure:
+
+            * **Immutability**: Rules can't be modified during execution
+            * **Static evaluation**: All matching happens immediately, not lazily
+            * **Safety**: If a rule modifies the registry during execution,
+              it won't affect the current execution cycle
         """
+        # Collect all registered rules by type
+        # Generic rules: stored as lists per plugin
         generic_rules = self._rules.values()
+
+        # Named rules: stored as dicts per plugin, extract the rule objects
         command_rules = (
             rules_dict.values()
             for rules_dict in self._commands.values())
@@ -405,8 +654,14 @@ class Manager:
         action_rules = (
             rules_dict.values()
             for rules_dict in self._action_commands.values())
+
+        # URL callbacks: stored as lists per plugin
         url_callback_rules = self._url_callbacks.values()
 
+        # Chain all rule types into a single iterable
+        # Each rule type is nested (plugin → rules), so chain twice:
+        # 1. Chain within each type to flatten plugin collections
+        # 2. Chain across types to get all rules
         rules = itertools.chain(
             itertools.chain(*generic_rules),
             itertools.chain(*command_rules),
@@ -414,18 +669,23 @@ class Manager:
             itertools.chain(*action_rules),
             itertools.chain(*url_callback_rules),
         )
+
+        # Match each rule against the pretrigger
+        # rule.match() returns an iterable of match objects (may be empty)
+        # Create (rule, match) pairs for all successful matches
         matches = (
             (rule, match)
             for rule in rules
             for match in rule.match(bot, pretrigger)
         )
-        # Returning a tuple instead of a sorted object ensures that:
-        #   1. it's not a lazy object
-        #   2. it's an immutable iterable
-        # We can't accept lazy evaluation or yield results; it has to be a
-        # static list of (rule/match), otherwise Python will raise an error
-        # if any rule execution tries to alter the list of registered rules.
-        # Making it immutable is the cherry on top.
+
+        # Sort by priority_scale (ascending: high=0, medium=100, low=1000)
+        # and convert to immutable tuple
+        # This ensures:
+        #   1. Not a lazy object - all matching is evaluated now
+        #   2. Immutable - can't be modified during execution
+        # If rule execution modifies the registry, it won't cause errors
+        # by changing the list we're currently iterating over
         return tuple(sorted(matches, key=lambda x: x[0].priority_scale))
 
     def check_url_callback(self, bot, url):
