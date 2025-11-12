@@ -154,8 +154,14 @@ class Scheduler(threading.Thread):
                 # Do not block on KeyboardInterrupt
                 LOGGER.debug('Job scheduler stopped by KeyboardInterrupt')
                 raise
-            except Exception as error:  # TODO: Be specific
-                LOGGER.error('Error in job scheduler: %s', error)
+            except (RuntimeError, ValueError, OSError) as error:
+                # RuntimeError: Job execution state errors, threading issues
+                # ValueError: Invalid job parameters or timing calculations
+                # OSError: System-level errors (resource limits, file operations)
+                LOGGER.exception(
+                    'Error in job scheduler: %s [stopping=%s, job_count=%s]',
+                    error, self.stopping.is_set(), len(self._jobs)
+                )
                 # Plugins exceptions are caught earlier, so this is a bit
                 # more serious. Options are to either stop the main thread
                 # or continue this thread and hope that it won't happen
@@ -188,8 +194,16 @@ class Scheduler(threading.Thread):
         try:
             with job:
                 job.execute(self.manager)
-        except Exception as error:  # TODO: Be specific
-            LOGGER.error('Error while processing job: %s', error)
+        except (RuntimeError, ValueError, OSError, AttributeError, TypeError) as error:
+            # RuntimeError: Job execution state errors
+            # ValueError: Invalid job parameters
+            # OSError: System-level errors during job execution
+            # AttributeError: Missing attributes/methods in job handler
+            # TypeError: Type errors in job handler arguments
+            LOGGER.exception(
+                'Error while processing job: %s [job=%s, plugin=%s, threaded=%s]',
+                error, job, job.get_plugin_name(), job.is_threaded()
+            )
             self.manager.on_job_error(self, job, error)
 
 

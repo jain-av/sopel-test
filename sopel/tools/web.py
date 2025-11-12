@@ -265,8 +265,15 @@ def search_urls(text, exclusion_char=None, clean=False, schemes=None):
     for url in urls:
         try:
             url = iri_to_uri(url)
-        except Exception:  # TODO: Be specific
-            pass
+        except (UnicodeError, UnicodeDecodeError, ValueError) as e:
+            # UnicodeError/UnicodeDecodeError: Invalid encoding in IRI
+            # ValueError: Malformed URL structure
+            import logging
+            LOGGER = logging.getLogger(__name__)
+            LOGGER.exception(
+                'Failed to convert IRI to URI: %s [url=%s]',
+                e, url
+            )
 
         if url not in seen:
             seen.add(url)
