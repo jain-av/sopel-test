@@ -314,8 +314,15 @@ class OutputRedirect:
                     sys.__stderr__.write(string)
                 else:
                     sys.__stdout__.write(string)
-            except Exception:  # TODO: Be specific
-                pass
+            except (OSError, ValueError, AttributeError) as e:
+                # OSError: I/O errors writing to stdout/stderr
+                # ValueError: String encoding issues
+                # AttributeError: stdout/stderr not available (e.g., closed or None)
+                LOGGER = logging.getLogger(__name__)
+                LOGGER.exception(
+                    'Failed to write to terminal: %s [stderr=%s, logpath=%s]',
+                    e, self.stderr, self.logpath
+                )
 
         with codecs.open(self.logpath, 'ab', encoding="utf8",
                          errors='xmlcharrefreplace') as logfile:

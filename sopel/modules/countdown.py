@@ -8,8 +8,12 @@ https://sopel.chat
 from __future__ import annotations
 
 import datetime
+import logging
 
 from sopel import plugin
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @plugin.command('countdown')
@@ -29,7 +33,11 @@ def generic_countdown(bot, trigger):
         try:
             diff = (datetime.datetime(int(text[0]), int(text[1]),
                     int(text[2])) - datetime.datetime.today())
-        except Exception:  # TODO: Be specific
+        except (ValueError, OverflowError) as err:
+            # Invalid date values or date out of range
+            LOGGER.exception(
+                'Invalid date in countdown command: %s [date=%s %s %s, user=%s, channel=%s, error=%s]',
+                err, text[0], text[1], text[2], trigger.nick, trigger.sender, err)
             bot.reply("Please use correct format: {}countdown 2012 12 21"
                       .format(bot.config.core.help_prefix))
             return plugin.NOLIMIT

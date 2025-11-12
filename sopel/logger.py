@@ -37,7 +37,15 @@ class IrcLoggingHandler(logging.Handler):
             self._bot.say(msg, self._channel)
         except (KeyboardInterrupt, SystemExit):
             raise
-        except Exception:  # TODO: Be specific
+        except (OSError, ValueError, RuntimeError) as e:
+            # OSError: Network/socket errors when sending IRC message
+            # ValueError: Invalid message format or encoding issues
+            # RuntimeError: Bot state errors during message send
+            LOGGER = logging.getLogger(__name__)
+            LOGGER.exception(
+                'Failed to emit log record to IRC channel: %s [channel=%s, record=%s]',
+                e, self._channel, record.getMessage()
+            )
             self.handleError(record)
 
 

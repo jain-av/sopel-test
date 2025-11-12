@@ -114,7 +114,21 @@ def wizard(filename):
 
     try:
         settings.save()
-    except Exception:  # TODO: Be specific
+    except (OSError, PermissionError) as e:
+        # File system errors (permissions, disk full, path issues)
+        LOGGER.exception(
+            "Failed to save configuration file: %s [config_file=%s, operation=wizard]",
+            e, filename
+        )
+        tools.stderr("Encountered an error while writing the config file. "
+                     "This shouldn't happen. Check permissions.")
+        raise
+    except UnicodeEncodeError as e:
+        # Encoding errors when writing configuration data
+        LOGGER.exception(
+            "Configuration contains characters that cannot be encoded: %s [config_file=%s, operation=wizard]",
+            e, filename
+        )
         tools.stderr("Encountered an error while writing the config file. "
                      "This shouldn't happen. Check permissions.")
         raise
@@ -140,7 +154,21 @@ def plugins_wizard(filename):
 
     try:
         settings.save()
-    except Exception:  # TODO: Be specific
+    except (OSError, PermissionError) as e:
+        # File system errors (permissions, disk full, path issues)
+        LOGGER.exception(
+            "Failed to save configuration file: %s [config_file=%s, operation=plugins_wizard]",
+            e, filename
+        )
+        tools.stderr("Encountered an error while writing the config file. "
+                     "This shouldn't happen. Check permissions.")
+        raise
+    except UnicodeEncodeError as e:
+        # Encoding errors when writing configuration data
+        LOGGER.exception(
+            "Configuration contains characters that cannot be encoded: %s [config_file=%s, operation=plugins_wizard]",
+            e, filename
+        )
         tools.stderr("Encountered an error while writing the config file. "
                      "This shouldn't happen. Check permissions.")
         raise

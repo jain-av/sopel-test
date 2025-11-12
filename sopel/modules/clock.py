@@ -8,6 +8,8 @@ https://sopel.chat
 """
 from __future__ import annotations
 
+import logging
+
 from sopel import plugin
 from sopel.tools.time import (
     format_time,
@@ -17,6 +19,8 @@ from sopel.tools.time import (
     validate_timezone
 )
 
+
+LOGGER = logging.getLogger(__name__)
 PLUGIN_OUTPUT_PREFIX = '[clock] '
 ERROR_NO_TIMEZONE = (
     'What timezone do you want to use? '
@@ -212,7 +216,11 @@ def update_user_format(bot, trigger):
 
     try:
         timef = format_time(db=bot.db, zone=tz, nick=trigger.nick)
-    except Exception:  # TODO: Be specific
+    except (ValueError, AttributeError, TypeError) as err:
+        # Invalid strftime format string, attribute errors, or type mismatches
+        LOGGER.exception(
+            'Invalid time format for user: %s [format=%s, user=%s, channel=%s, error=%s]',
+            err, tformat, trigger.nick, trigger.sender, err)
         bot.reply(ERROR_INVALID_FORMAT)
         # New format doesn't work. Revert save in database.
         bot.db.set_nick_value(trigger.nick, 'time_format', old_format)
@@ -343,7 +351,11 @@ def update_channel_format(bot, trigger):
 
     try:
         timef = format_time(db=bot.db, zone=tz, channel=trigger.sender)
-    except Exception:  # TODO: Be specific
+    except (ValueError, AttributeError, TypeError) as err:
+        # Invalid strftime format string, attribute errors, or type mismatches
+        LOGGER.exception(
+            'Invalid time format for channel: %s [format=%s, channel=%s, user=%s, error=%s]',
+            err, tformat, trigger.sender, trigger.nick, err)
         bot.reply(ERROR_INVALID_FORMAT)
         # New format doesn't work. Revert save in database.
         bot.db.set_channel_value(trigger.sender, 'time_format', old_format)
