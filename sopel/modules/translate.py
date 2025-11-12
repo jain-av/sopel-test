@@ -254,7 +254,11 @@ def mangle(bot, trigger):
         backup = phrase
         try:
             phrase = translate(phrase[0], 'en', lang)
-        except Exception:  # TODO: Be specific
+        except (requests.RequestException, ValueError, KeyError) as err:
+            # Network/API errors, JSON parsing issues, or missing response fields
+            LOGGER.exception(
+                'Translation mangling failed (en to %s: "%s"): %s [trigger=%s, user=%s, channel=%s]',
+                lang, phrase[0] if phrase else '', err, trigger, trigger.nick, trigger.sender)
             phrase = False
         if not phrase:
             phrase = backup
@@ -262,7 +266,11 @@ def mangle(bot, trigger):
 
         try:
             phrase = translate(phrase[0], lang, 'en')
-        except Exception:  # TODO: Be specific
+        except (requests.RequestException, ValueError, KeyError) as err:
+            # Network/API errors, JSON parsing issues, or missing response fields
+            LOGGER.exception(
+                'Translation mangling failed (%s to en: "%s"): %s [trigger=%s, user=%s, channel=%s]',
+                lang, phrase[0] if phrase else '', err, trigger, trigger.nick, trigger.sender)
             phrase = backup
             continue
 

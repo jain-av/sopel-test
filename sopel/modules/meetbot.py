@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import codecs
 import collections
+import logging
 import os
 import re
 from string import punctuation, whitespace
@@ -21,6 +22,7 @@ from sopel.config import types
 from sopel.modules.url import find_title
 
 
+LOGGER = logging.getLogger(__name__)
 UNTITLED_MEETING = "Untitled meeting"
 
 
@@ -225,7 +227,12 @@ def startmeeting(bot, trigger):
     if not os.path.isdir(channel_log_path):
         try:
             os.makedirs(channel_log_path)
-        except Exception:  # TODO: Be specific
+        except (OSError, PermissionError) as err:
+            # Filesystem errors when creating directory (permission issues, disk full, invalid path, etc.)
+            LOGGER.exception(
+                'Failed to create meeting log directory: %s [path=%s, meeting=%s, user=%s, channel=%s, error=%s]',
+                err, channel_log_path, meetings_dict[trigger.sender]["title"],
+                trigger.nick, trigger.sender, err)
             bot.say(
                 "Meeting not started: Couldn't create log directory for this channel"
             )
@@ -436,7 +443,12 @@ def meetinglink(bot, trigger):
         link = "http://" + link
     try:
         title = find_title(link)
-    except Exception:  # TODO: Be specific
+    except (OSError, ValueError, RuntimeError) as err:
+        # Network errors, invalid URLs, or HTTP request failures
+        LOGGER.exception(
+            'Failed to fetch title for meeting link: %s [link=%s, meeting=%s, user=%s, channel=%s, error=%s]',
+            err, link, meetings_dict[trigger.sender].get("title", "unknown"),
+            trigger.nick, trigger.sender, err)
         title = ""
     log_plain("LINK: %s [%s]" % (link, title), trigger.sender)
     log_html_listitem('<a href="%s">%s</a>' % (link, title), trigger.sender)
